@@ -128,8 +128,19 @@ pub enum Terrain {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MapLayout {
     pub name: String,
-    pub terrain: Vec<Vec<Terrain>>, // 100x100 grid
+    pub width: u8,
+    pub height: u8,
+    pub terrain: Vec<Vec<Terrain>>,
     pub initial_objects: Vec<GameObject>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameState {
+    pub tick: u32,
+    pub width: u8,
+    pub height: u8,
+    pub objects: Vec<GameObject>,
+    pub terrain: Vec<Vec<Terrain>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

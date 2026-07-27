@@ -1,3 +1,4 @@
+# Bot Library
   1. List the current library:
     ./target/debug/screeps_arena_sim lib list
 
@@ -16,3 +17,8 @@
 
   6. Delete the entire family:
     ./target/debug/screeps_arena_sim lib delete my_bot
+
+
+# Match Runner
+1.  run a match
+    cargo run -- run wtfbot:0 wtfbot:0 spawn_strike_basic
