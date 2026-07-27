@@ -9,5 +9,5 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 libloading = "0.8"
 anyhow = "1.0"
-mock-screeps-arena = { path = "arena_api_mock/mock-screeps-arena" }
+mock-screeps-arena = { path = "../arena_api_mock/mock-screeps-arena" }
 sha2 = "0.10"
