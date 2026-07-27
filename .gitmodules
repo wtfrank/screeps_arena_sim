@@ -1,0 +1,3 @@
+[submodule "arena_api_mock"]
+	path = arena_api_mock
+	url = git@github.com:wtfrank/screeps_arena_api_mock.git
