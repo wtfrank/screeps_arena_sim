@@ -54,15 +54,28 @@ pub fn get_known_arenas() -> Vec<KnownArena> {
     ]
 }
 
+fn collect_layout_files(dir: &Path, acc: &mut Vec<PathBuf>) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_layout_files(&path, acc);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                acc.push(path);
+            }
+        }
+    }
+}
+
 /// Attempts to load arena layout terrain data from local files stored in XDG_DATA library_dir/layouts for a given arena_id.
-/// If `specified_layout` (a layout alias or game ID) is provided, that specific layout is loaded.
-/// Otherwise, selects a layout at random if multiple layout files exist for the arena.
+/// Selects a layout at random if multiple layout files exist for the arena.
 /// Returns an error if no valid layout is available.
 pub fn load_arena_terrain(
     library_dir: &Path,
     arena_id: &str,
     specified_layout: Option<&str>,
     layout_aliases: &HashMap<String, String>,
+    arena_aliases: &HashMap<String, ArenaAlias>,
     width: u8,
     height: u8,
 ) -> Result<Vec<Vec<crate::models::Terrain>>> {
@@ -76,17 +89,16 @@ pub fn load_arena_terrain(
         layout_aliases.get(trimmed).map(|s| s.as_str()).unwrap_or(trimmed)
     });
 
-    // Scan <library_dir>/layouts/ directory under XDG data
+    let canonical_requested_arena = if let Some(target) = arena_aliases.get(arena_id.trim()) {
+        target.arena_id.clone()
+    } else {
+        arena_id.trim().to_string()
+    };
+
+    // Recursively scan <library_dir>/layouts/ directory under XDG data
     let layouts_dir = library_dir.join("layouts");
     if layouts_dir.exists() && layouts_dir.is_dir() {
-        if let Ok(entries) = fs::read_dir(&layouts_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                    available_layouts.push(path);
-                }
-            }
-        }
+        collect_layout_files(&layouts_dir, &mut available_layouts);
     }
 
     let mut valid_grids = Vec::new();
@@ -94,17 +106,36 @@ pub fn load_arena_terrain(
     for path in available_layouts {
         if let Ok(content) = fs::read_to_string(&path) {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                // Infer arena_id from json payload or parent directory structure
+                let layout_arena = json.pointer("/game/arena")
+                    .or_else(|| json.get("arena"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        // Fallback: path might be layouts/<arena_id>/<game_id>/terrain.json
+                        path.parent()
+                            .and_then(|p| p.parent())
+                            .and_then(|p| p.file_name())
+                            .and_then(|n| n.to_str())
+                            .map(|s| s.to_string())
+                    });
+
+                // Infer game_id from json payload or parent directory name
                 let game_id = json.pointer("/game/game/_id")
                     .or_else(|| json.pointer("/game/_id"))
                     .or_else(|| json.get("_id"))
                     .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
                     .unwrap_or_else(|| {
-                        path.file_stem().and_then(|s| s.to_str()).unwrap_or("")
+                        path.parent()
+                            .and_then(|p| p.file_name())
+                            .and_then(|n| n.to_str())
+                            .unwrap_or_else(|| path.file_stem().and_then(|s| s.to_str()).unwrap_or(""))
+                            .to_string()
                     });
 
                 let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-                // If specific layout was requested, match by game_id, filename, or stem
                 if let Some(target) = target_layout_id_or_file {
                     let matches = target == game_id
                         || target == filename
@@ -115,13 +146,9 @@ pub fn load_arena_terrain(
                         continue;
                     }
                 } else {
-                    // Check if json matches this arena
-                    let layout_arena = json.pointer("/game/arena")
-                        .or_else(|| json.get("arena"))
-                        .and_then(|v| v.as_str());
-
                     if let Some(target_arena) = layout_arena {
-                        if target_arena != arena_id {
+                        // Compare normalized arena IDs (resolving aliases if needed)
+                        if target_arena != arena_id && target_arena != canonical_requested_arena {
                             continue;
                         }
                     }
@@ -184,58 +211,72 @@ pub fn list_all_layouts(library_dir: &Path, layout_aliases: &HashMap<String, Str
         .collect();
 
     let layouts_dir = library_dir.join("layouts");
+    let mut candidate_paths = Vec::new();
 
     if layouts_dir.exists() && layouts_dir.is_dir() {
-        if let Ok(entries) = fs::read_dir(&layouts_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+        collect_layout_files(&layouts_dir, &mut candidate_paths);
+    }
+
+    let mut seen_ids = std::collections::HashSet::new();
+
+    for path in candidate_paths {
+        let canonical_or_lossy = path.to_string_lossy().to_string();
+        if seen_paths.contains(&canonical_or_lossy) {
+            continue;
+        }
+        seen_paths.insert(canonical_or_lossy.clone());
+
+        if let Ok(content) = fs::read_to_string(&path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                let arena_id = json.pointer("/game/arena")
+                    .or_else(|| json.get("arena"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        path.parent()
+                            .and_then(|p| p.parent())
+                            .and_then(|p| p.file_name())
+                            .and_then(|n| n.to_str())
+                            .map(|s| s.to_string())
+                    })
+                    .unwrap_or_else(|| "unknown".to_string());
+
+                let game_id = json.pointer("/game/game/_id")
+                    .or_else(|| json.pointer("/game/_id"))
+                    .or_else(|| json.get("_id"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| {
+                        path.parent()
+                            .and_then(|p| p.file_name())
+                            .and_then(|n| n.to_str())
+                            .unwrap_or_else(|| path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown"))
+                            .to_string()
+                    });
+
+                if seen_ids.contains(&game_id) {
                     continue;
                 }
+                seen_ids.insert(game_id.clone());
 
-                let canonical_or_lossy = path.to_string_lossy().to_string();
-                if seen_paths.contains(&canonical_or_lossy) {
-                    continue;
-                }
-                seen_paths.insert(canonical_or_lossy.clone());
+                let arena_name = known_arena_map.get(&arena_id)
+                    .cloned()
+                    .unwrap_or_else(|| "-".to_string());
 
-                if let Ok(content) = fs::read_to_string(&path) {
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                        let game_id = json.pointer("/game/game/_id")
-                            .or_else(|| json.pointer("/game/_id"))
-                            .or_else(|| json.get("_id"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_else(|| {
-                                path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown")
-                            })
-                            .to_string();
+                let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-                        let arena_id = json.pointer("/game/arena")
-                            .or_else(|| json.get("arena"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown")
-                            .to_string();
+                // Find alias matching game_id, filename, or path
+                let alias = alias_lookup.get(&game_id)
+                    .or_else(|| alias_lookup.get(filename))
+                    .or_else(|| alias_lookup.get(&canonical_or_lossy))
+                    .cloned();
 
-                        let arena_name = known_arena_map.get(&arena_id)
-                            .cloned()
-                            .unwrap_or_else(|| "-".to_string());
-
-                        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-
-                        // Find alias matching game_id, filename, or path
-                        let alias = alias_lookup.get(&game_id)
-                            .or_else(|| alias_lookup.get(filename))
-                            .or_else(|| alias_lookup.get(&canonical_or_lossy))
-                            .cloned();
-
-                        results.push(LayoutInfo {
-                            alias,
-                            game_id,
-                            arena_id,
-                            arena_name,
-                        });
-                    }
-                }
+                results.push(LayoutInfo {
+                    alias,
+                    game_id,
+                    arena_id,
+                    arena_name,
+                });
             }
         }
     }

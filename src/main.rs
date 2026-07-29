@@ -170,6 +170,7 @@ fn generate_default_state(
     arena_id: &str,
     specified_layout: Option<&str>,
     layout_aliases: &std::collections::HashMap<String, String>,
+    arena_aliases: &std::collections::HashMap<String, bot_library::ArenaAlias>,
     width: u8,
     height: u8,
 ) -> Result<GameState> {
@@ -218,6 +219,7 @@ fn generate_default_state(
         arena_id,
         specified_layout,
         layout_aliases,
+        arena_aliases,
         width,
         height,
     )?;
@@ -371,7 +373,7 @@ fn main() -> Result<()> {
             println!("Loading Bot 1: {:?}", bot1_path);
             println!("Loading Bot 2: {:?}", bot2_path);
 
-            let initial_state = generate_default_state(&library_path, &arena_id, layout.as_deref(), &lib.layout_aliases, 100, 100)?;
+            let initial_state = generate_default_state(&library_path, &arena_id, layout.as_deref(), &lib.layout_aliases, &lib.aliases, 100, 100)?;
             let rules = Ruleset {
                 tick_limit: ticks,
                 cpu_time_limit: 1000,
