@@ -139,7 +139,7 @@ fn get_cache_dir() -> PathBuf {
     PathBuf::from("./bot_cache")
 }
 
-fn generate_default_state(_arena_id: &str, width: u8, height: u8) -> GameState {
+fn generate_default_state(library_dir: &std::path::Path, arena_id: &str, width: u8, height: u8) -> GameState {
     let mut objects = Vec::new();
 
     // Spawn 1 for Bot1, Spawn 2 for Bot2
@@ -180,12 +180,14 @@ fn generate_default_state(_arena_id: &str, width: u8, height: u8) -> GameState {
         fatigue: 0,
     });
 
+    let terrain = bot_library::load_arena_terrain(library_dir, arena_id, width, height);
+
     GameState {
         tick: 1,
         width,
         height,
         objects,
-        terrain: vec![vec![Terrain::Plain; height as usize]; width as usize],
+        terrain,
     }
 }
 
@@ -301,7 +303,7 @@ fn main() -> Result<()> {
             println!("Loading Bot 1: {:?}", bot1_path);
             println!("Loading Bot 2: {:?}", bot2_path);
 
-            let initial_state = generate_default_state(&arena_id, 100, 100);
+            let initial_state = generate_default_state(&library_path, &arena_id, 100, 100);
             let rules = Ruleset {
                 tick_limit: ticks,
                 cpu_time_limit: 1000,

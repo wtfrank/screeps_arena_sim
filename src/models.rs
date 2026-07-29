@@ -125,6 +125,26 @@ pub enum Terrain {
     Swamp,
 }
 
+impl Terrain {
+    pub fn parse_string(raw: &str, width: usize, height: usize) -> Vec<Vec<Terrain>> {
+        let mut grid = vec![vec![Terrain::Plain; height]; width];
+        let bytes = raw.as_bytes();
+        for y in 0..height {
+            for x in 0..width {
+                let idx = y * width + x;
+                if idx < bytes.len() {
+                    grid[x][y] = match bytes[idx] {
+                        b'1' => Terrain::Wall,
+                        b'2' => Terrain::Swamp,
+                        _ => Terrain::Plain,
+                    };
+                }
+            }
+        }
+        grid
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MapLayout {
     pub name: String,

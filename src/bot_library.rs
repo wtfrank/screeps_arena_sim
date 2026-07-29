@@ -54,6 +54,40 @@ pub fn get_known_arenas() -> Vec<KnownArena> {
     ]
 }
 
+/// Attempts to load arena layout terrain data from local files or protocol JSONs for a given arena_id.
+pub fn load_arena_terrain(library_dir: &Path, arena_id: &str, width: u8, height: u8) -> Vec<Vec<crate::models::Terrain>> {
+    let width_u = width as usize;
+    let height_u = height as usize;
+
+    // 1. Check library layout files directory (<library_dir>/layouts/<arena_id>.json or <library_dir>/layouts/terrain.json)
+    let layout_paths = vec![
+        library_dir.join("layouts").join(format!("{}.json", arena_id)),
+        library_dir.join("layouts").join("terrain.json"),
+        PathBuf::from("/home/ff/projects/screeps_arena/screeps_arena_protocol/terrain.json"),
+    ];
+
+    for path in layout_paths {
+        if path.exists() {
+            if let Ok(content) = fs::read_to_string(&path) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    // Extract terrain string from game.game.terrain or game.terrain or terrain
+                    let raw_terrain = json.pointer("/game/game/terrain")
+                        .or_else(|| json.pointer("/game/terrain"))
+                        .or_else(|| json.get("terrain"))
+                        .and_then(|v| v.as_str());
+
+                    if let Some(terrain_str) = raw_terrain {
+                        return crate::models::Terrain::parse_string(terrain_str, width_u, height_u);
+                    }
+                }
+            }
+        }
+    }
+
+    // Default fallback: plain terrain
+    vec![vec![crate::models::Terrain::Plain; height_u]; width_u]
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ArenaAlias {
     pub arena_id: String,
