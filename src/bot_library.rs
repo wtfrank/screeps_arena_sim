@@ -54,7 +54,7 @@ pub fn get_known_arenas() -> Vec<KnownArena> {
     ]
 }
 
-/// Attempts to load arena layout terrain data from local files or protocol JSONs for a given arena_id.
+/// Attempts to load arena layout terrain data from local files stored in XDG_DATA library_dir/layouts for a given arena_id.
 /// Selects a layout at random if multiple layout files exist for the arena.
 /// Returns an error if no valid layout is available.
 pub fn load_arena_terrain(library_dir: &Path, arena_id: &str, width: u8, height: u8) -> Result<Vec<Vec<crate::models::Terrain>>> {
@@ -62,30 +62,16 @@ pub fn load_arena_terrain(library_dir: &Path, arena_id: &str, width: u8, height:
     let height_u = height as usize;
     let mut available_layouts = Vec::new();
 
-    // 1. Scan <library_dir>/layouts/ directory for layouts matching <arena_id>*.json
+    // Scan <library_dir>/layouts/ directory under XDG data
     let layouts_dir = library_dir.join("layouts");
     if layouts_dir.exists() && layouts_dir.is_dir() {
         if let Ok(entries) = fs::read_dir(&layouts_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if filename.starts_with(arena_id) && filename.ends_with(".json") {
+                if path.extension().and_then(|e| e.to_str()) == Some("json") {
                     available_layouts.push(path);
                 }
             }
-        }
-    }
-
-    // 2. Check direct layout file <library_dir>/layouts/<arena_id>.json or fallback protocol terrain.json
-    let fallback_paths = vec![
-        layouts_dir.join(format!("{}.json", arena_id)),
-        layouts_dir.join("terrain.json"),
-        PathBuf::from("/home/ff/projects/screeps_arena/screeps_arena_protocol/terrain.json"),
-    ];
-
-    for path in fallback_paths {
-        if path.exists() && !available_layouts.contains(&path) {
-            available_layouts.push(path);
         }
     }
 
@@ -94,9 +80,13 @@ pub fn load_arena_terrain(library_dir: &Path, arena_id: &str, width: u8, height:
     for path in available_layouts {
         if let Ok(content) = fs::read_to_string(&path) {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                // Check if json matches this arena (if arena field is present, verify match)
-                if let Some(layout_arena) = json.pointer("/game/arena").or_else(|| json.get("arena")).and_then(|v| v.as_str()) {
-                    if layout_arena != arena_id {
+                // Check if json matches this arena
+                let layout_arena = json.pointer("/game/arena")
+                    .or_else(|| json.get("arena"))
+                    .and_then(|v| v.as_str());
+
+                if let Some(target_arena) = layout_arena {
+                    if target_arena != arena_id {
                         continue;
                     }
                 }
@@ -123,6 +113,89 @@ pub fn load_arena_terrain(library_dir: &Path, arena_id: &str, width: u8, height:
     println!("Loaded terrain layout from: {:?}", chosen_path);
 
     Ok(grid)
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct LayoutInfo {
+    pub alias: Option<String>,
+    pub game_id: String,
+    pub arena_id: String,
+    pub arena_name: String,
+}
+
+/// Discovers all layout files in <library_dir>/layouts, listing them with their alias, game ID, arena ID, and arena name.
+pub fn list_all_layouts(library_dir: &Path, layout_aliases: &HashMap<String, String>) -> Vec<LayoutInfo> {
+    let mut results = Vec::new();
+    let mut seen_paths = std::collections::HashSet::new();
+
+    let known_arenas = get_known_arenas();
+    let known_arena_map: HashMap<String, String> = known_arenas.into_iter()
+        .map(|a| (a.arena_id, a.name))
+        .collect();
+
+    // Reversible lookup: game_id / filename / path -> alias
+    let alias_lookup: HashMap<String, String> = layout_aliases.iter()
+        .map(|(alias, target)| (target.clone(), alias.clone()))
+        .collect();
+
+    let layouts_dir = library_dir.join("layouts");
+
+    if layouts_dir.exists() && layouts_dir.is_dir() {
+        if let Ok(entries) = fs::read_dir(&layouts_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                    continue;
+                }
+
+                let canonical_or_lossy = path.to_string_lossy().to_string();
+                if seen_paths.contains(&canonical_or_lossy) {
+                    continue;
+                }
+                seen_paths.insert(canonical_or_lossy.clone());
+
+                if let Ok(content) = fs::read_to_string(&path) {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                        let game_id = json.pointer("/game/game/_id")
+                            .or_else(|| json.pointer("/game/_id"))
+                            .or_else(|| json.get("_id"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_else(|| {
+                                path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown")
+                            })
+                            .to_string();
+
+                        let arena_id = json.pointer("/game/arena")
+                            .or_else(|| json.get("arena"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+
+                        let arena_name = known_arena_map.get(&arena_id)
+                            .cloned()
+                            .unwrap_or_else(|| "-".to_string());
+
+                        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+                        // Find alias matching game_id, filename, or path
+                        let alias = alias_lookup.get(&game_id)
+                            .or_else(|| alias_lookup.get(filename))
+                            .or_else(|| alias_lookup.get(&canonical_or_lossy))
+                            .cloned();
+
+                        results.push(LayoutInfo {
+                            alias,
+                            game_id,
+                            arena_id,
+                            arena_name,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    results
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -167,6 +240,8 @@ pub struct BotLibrary {
     pub bots: Vec<BotEntry>,
     #[serde(default, deserialize_with = "deserialize_aliases")]
     pub aliases: HashMap<String, ArenaAlias>, // alias -> ArenaAlias
+    #[serde(default)]
+    pub layout_aliases: HashMap<String, String>, // layout_alias -> layout_filename_or_path
 }
 
 fn deserialize_aliases<'de, D>(deserializer: D) -> Result<HashMap<String, ArenaAlias>, D::Error>
@@ -183,6 +258,7 @@ impl Default for BotLibrary {
             next_id: 1,
             bots: Vec::new(),
             aliases: HashMap::new(),
+            layout_aliases: HashMap::new(),
         }
     }
 }
@@ -253,6 +329,31 @@ impl BotLibrary {
         let alias = alias.trim();
         if self.aliases.remove(alias).is_none() {
             return Err(anyhow::anyhow!("Alias '{}' not found", alias));
+        }
+        self.save(dir)?;
+        Ok(())
+    }
+
+    pub fn set_layout_alias(&mut self, dir: &Path, alias: &str, layout: &str) -> Result<()> {
+        let alias = alias.trim().to_string();
+        let layout = layout.trim().to_string();
+
+        if alias.is_empty() {
+            return Err(anyhow::anyhow!("Layout alias cannot be empty"));
+        }
+        if layout.is_empty() {
+            return Err(anyhow::anyhow!("Layout target/file cannot be empty"));
+        }
+
+        self.layout_aliases.insert(alias, layout);
+        self.save(dir)?;
+        Ok(())
+    }
+
+    pub fn remove_layout_alias(&mut self, dir: &Path, alias: &str) -> Result<()> {
+        let alias = alias.trim();
+        if self.layout_aliases.remove(alias).is_none() {
+            return Err(anyhow::anyhow!("Layout alias '{}' not found", alias));
         }
         self.save(dir)?;
         Ok(())

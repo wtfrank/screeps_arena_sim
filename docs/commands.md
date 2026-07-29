@@ -51,6 +51,30 @@ Removes an existing arena alias.
 
 ---
 
+### `layout`
+Subcommands to manage aliases for arena layout files or targets.
+
+#### `layout list`
+Lists all layout files stored in the XDG layout directory (`<library_dir>/layouts/`).
+- **Output Columns**:
+  - `Layout Alias`: Short layout alias (if configured).
+  - `Game ID`: Platform game instance ID string.
+  - `Arena ID`: Canonical arena ID string.
+  - `Arena Name`: Human-readable arena name (e.g., `Spawn Strike 3`).
+
+#### `layout set <ALIAS> <LAYOUT>`
+Creates or updates a short alias mapping to a layout file or target.
+- **Arguments**:
+  - `ALIAS`: Short unique layout alias identifier (e.g. `layout1`).
+  - `LAYOUT`: Target layout filename or path (e.g. `69cfe6fcece2ae9f75da12d1.json`).
+
+#### `layout remove <ALIAS>`
+Removes an existing layout alias.
+- **Arguments**:
+  - `ALIAS`: Short layout alias string to remove.
+
+---
+
 ### `lib`
 Subcommands to manage compiled bot binaries in the local library.
 

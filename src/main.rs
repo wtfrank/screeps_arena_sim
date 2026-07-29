@@ -38,6 +38,11 @@ enum Commands {
         #[command(subcommand)]
         action: AliasCommands,
     },
+    /// Manage layout aliases
+    Layout {
+        #[command(subcommand)]
+        action: LayoutAliasCommands,
+    },
     /// Manage the bot library
     Lib {
         #[command(subcommand)]
@@ -81,6 +86,24 @@ enum AliasCommands {
         alias: String,
     },
     /// List all defined arena aliases
+    List,
+}
+
+#[derive(Subcommand)]
+enum LayoutAliasCommands {
+    /// Set a short alias for a layout file or target
+    Set {
+        /// Short unique layout alias (e.g. map1)
+        alias: String,
+        /// Target layout filename or path
+        layout: String,
+    },
+    /// Remove a layout alias
+    Remove {
+        /// Short layout alias to remove
+        alias: String,
+    },
+    /// List all defined layout aliases
     List,
 }
 
@@ -234,6 +257,32 @@ fn main() -> Result<()> {
                     for (alias, target) in &lib.aliases {
                         let name_display = if target.name.is_empty() { "-" } else { &target.name };
                         println!("{:<15} | {:<25} | {}", alias, name_display, target.arena_id);
+                    }
+                }
+            }
+        },
+        Commands::Layout { action } => match action {
+            LayoutAliasCommands::Set { alias, layout } => {
+                let mut lib = bot_library::BotLibrary::load(&library_path)?;
+                lib.set_layout_alias(&library_path, &alias, &layout)?;
+                println!("Successfully set layout alias '{}' -> '{}'", alias, layout);
+            }
+            LayoutAliasCommands::Remove { alias } => {
+                let mut lib = bot_library::BotLibrary::load(&library_path)?;
+                lib.remove_layout_alias(&library_path, &alias)?;
+                println!("Successfully removed layout alias '{}'", alias);
+            }
+            LayoutAliasCommands::List => {
+                let lib = bot_library::BotLibrary::load(&library_path)?;
+                let layouts = bot_library::list_all_layouts(&library_path, &lib.layout_aliases);
+                if layouts.is_empty() {
+                    println!("No layout files found in layouts directory.");
+                } else {
+                    println!("{:<15} | {:<28} | {:<26} | {}", "Layout Alias", "Game ID", "Arena ID", "Arena Name");
+                    println!("{}", "-".repeat(100));
+                    for layout in layouts {
+                        let alias_display = layout.alias.as_deref().unwrap_or("-");
+                        println!("{:<15} | {:<28} | {:<26} | {}", alias_display, layout.game_id, layout.arena_id, layout.arena_name);
                     }
                 }
             }
