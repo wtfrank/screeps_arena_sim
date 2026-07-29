@@ -1,15 +1,91 @@
 use std::path::{Path, PathBuf};
 use std::fs;
+use std::collections::HashMap;
 use anyhow::{Context, Result};
 use serde::{Serialize, Deserialize};
 use sha2::{Sha256, Digest};
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct KnownArena {
+    pub arena_id: String,
+    pub name: String,
+    pub folder_name: String,
+    pub advanced: bool,
+}
+
+pub fn get_known_arenas() -> Vec<KnownArena> {
+    vec![
+        KnownArena {
+            arena_id: "69cfe6fcece2ae9f75da12d1".to_string(),
+            name: "Spawn Strike 3".to_string(),
+            folder_name: "season3-spawn_strike".to_string(),
+            advanced: false,
+        },
+        KnownArena {
+            arena_id: "69cfe700ece2ae9f75da12d2".to_string(),
+            name: "Spawn Strike Advanced 3".to_string(),
+            folder_name: "season3-spawn_strike_advanced".to_string(),
+            advanced: true,
+        },
+        KnownArena {
+            arena_id: "69cfe704ece2ae9f75da12d3".to_string(),
+            name: "Power Split 3".to_string(),
+            folder_name: "season3-power_split".to_string(),
+            advanced: false,
+        },
+        KnownArena {
+            arena_id: "69cfe708ece2ae9f75da12d4".to_string(),
+            name: "Power Split Advanced 3".to_string(),
+            folder_name: "season3-power_split_advanced".to_string(),
+            advanced: true,
+        },
+        KnownArena {
+            arena_id: "69cfe70cece2ae9f75da12d5".to_string(),
+            name: "Escort Run 3".to_string(),
+            folder_name: "season3-escort_run".to_string(),
+            advanced: false,
+        },
+        KnownArena {
+            arena_id: "69cfe710ece2ae9f75da12d6".to_string(),
+            name: "Escort Run Advanced 3".to_string(),
+            folder_name: "season3-escort_run_advanced".to_string(),
+            advanced: true,
+        },
+    ]
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ArenaAlias {
+    pub arena_id: String,
+    #[serde(default)]
+    pub name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum AliasValue {
+    Simple(String),
+    Full(ArenaAlias),
+}
+
+impl AliasValue {
+    pub fn into_arena_alias(self) -> ArenaAlias {
+        match self {
+            AliasValue::Simple(arena_id) => ArenaAlias {
+                arena_id,
+                name: String::new(),
+            },
+            AliasValue::Full(alias) => alias,
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BotEntry {
     pub id: u32,
     pub name: String,
     pub version: u32,
-    pub map: String,
+    pub arena_id: String,
     pub path: String,
     pub sha256: String,
 }
@@ -18,6 +94,16 @@ pub struct BotEntry {
 pub struct BotLibrary {
     pub next_id: u32,
     pub bots: Vec<BotEntry>,
+    #[serde(default, deserialize_with = "deserialize_aliases")]
+    pub aliases: HashMap<String, ArenaAlias>, // alias -> ArenaAlias
+}
+
+fn deserialize_aliases<'de, D>(deserializer: D) -> Result<HashMap<String, ArenaAlias>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: HashMap<String, AliasValue> = serde::Deserialize::deserialize(deserializer)?;
+    Ok(raw.into_iter().map(|(k, v)| (k, v.into_arena_alias())).collect())
 }
 
 impl Default for BotLibrary {
@@ -25,6 +111,7 @@ impl Default for BotLibrary {
         Self {
             next_id: 1,
             bots: Vec::new(),
+            aliases: HashMap::new(),
         }
     }
 }
@@ -35,28 +122,6 @@ fn calculate_sha256(path: &Path) -> Result<String> {
     std::io::copy(&mut file, &mut hasher).context("Failed to read file for hashing")?;
     let result = hasher.finalize();
     Ok(format!("{:x}", result))
-}
-
-/// Standardizes map input and validates it against the 6 allowed maps.
-fn validate_and_standardize_map(map_input: &str) -> Result<String> {
-    match map_input.to_lowercase().as_str() {
-        "spawn_strike_basic" | "ssb" => Ok("spawn_strike_basic".to_string()),
-        "spawn_strike_advanced" | "ssa" => Ok("spawn_strike_advanced".to_string()),
-        "power_split_basic" | "psb" => Ok("power_split_basic".to_string()),
-        "power_split_advanced" | "psa" => Ok("power_split_advanced".to_string()),
-        "escort_run_basic" | "erb" => Ok("escort_run_basic".to_string()),
-        "escort_run_advanced" | "era" => Ok("escort_run_advanced".to_string()),
-        _ => Err(anyhow::anyhow!(
-            "Invalid map '{}'. Allowed maps are:\n\
-             - spawn_strike_basic (alias: ssb)\n\
-             - spawn_strike_advanced (alias: ssa)\n\
-             - power_split_basic (alias: psb)\n\
-             - power_split_advanced (alias: psa)\n\
-             - escort_run_basic (alias: erb)\n\
-             - escort_run_advanced (alias: era)",
-            map_input
-        )),
-    }
 }
 
 impl BotLibrary {
@@ -85,8 +150,49 @@ impl BotLibrary {
         Ok(())
     }
 
-    pub fn add(&mut self, dir: &Path, name: &str, map: &str, source_path: &Path) -> Result<BotEntry> {
-        let standardized_map = validate_and_standardize_map(map)?;
+    /// Resolves an arena input string (which can be an arena_id or an alias) to the canonical arena_id.
+    pub fn resolve_arena_id(&self, input: &str) -> String {
+        let trimmed = input.trim();
+        if let Some(target) = self.aliases.get(trimmed) {
+            target.arena_id.clone()
+        } else {
+            trimmed.to_string()
+        }
+    }
+
+    pub fn set_alias(&mut self, dir: &Path, alias: &str, arena_id: &str, name: Option<&str>) -> Result<()> {
+        let alias = alias.trim().to_string();
+        let arena_id = arena_id.trim().to_string();
+
+        if alias.is_empty() {
+            return Err(anyhow::anyhow!("Alias cannot be empty"));
+        }
+        if arena_id.is_empty() {
+            return Err(anyhow::anyhow!("Arena ID cannot be empty"));
+        }
+
+        let name = name.unwrap_or("").trim().to_string();
+
+        self.aliases.insert(alias, ArenaAlias { arena_id, name });
+        self.save(dir)?;
+        Ok(())
+    }
+
+    pub fn remove_alias(&mut self, dir: &Path, alias: &str) -> Result<()> {
+        let alias = alias.trim();
+        if self.aliases.remove(alias).is_none() {
+            return Err(anyhow::anyhow!("Alias '{}' not found", alias));
+        }
+        self.save(dir)?;
+        Ok(())
+    }
+
+    pub fn add(&mut self, dir: &Path, name: &str, arena_or_alias: &str, source_path: &Path) -> Result<BotEntry> {
+        let arena_id = self.resolve_arena_id(arena_or_alias);
+        if arena_id.is_empty() {
+            return Err(anyhow::anyhow!("Arena ID / alias cannot be empty"));
+        }
+
         let sha256 = calculate_sha256(source_path)?;
 
         // Check if a bot with the same SHA256 already exists
@@ -123,7 +229,7 @@ impl BotLibrary {
             id,
             name: name.to_string(),
             version,
-            map: standardized_map,
+            arena_id,
             path: dest_path.to_string_lossy().to_string(),
             sha256,
         };
@@ -182,3 +288,4 @@ impl BotLibrary {
         Ok(())
     }
 }
+

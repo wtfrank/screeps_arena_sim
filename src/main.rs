@@ -28,6 +28,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Manage real arenas
+    Arena {
+        #[command(subcommand)]
+        action: ArenaCommands,
+    },
+    /// Manage arena aliases
+    Alias {
+        #[command(subcommand)]
+        action: AliasCommands,
+    },
     /// Manage the bot library
     Lib {
         #[command(subcommand)]
@@ -39,12 +49,39 @@ enum Commands {
         bot1: String,
         /// Name:version or ID of the second bot (e.g. wtfbot:1)
         bot2: String,
-        /// Map name or alias (e.g. ssb, spawn_strike_basic)
-        map: String,
+        /// Real arena ID or short alias
+        arena: String,
         /// Maximum ticks to simulate
         #[arg(short, long, default_value_t = 1000)]
         ticks: u32,
     },
+}
+
+#[derive(Subcommand)]
+enum ArenaCommands {
+    /// List known arenas
+    List,
+}
+
+#[derive(Subcommand)]
+enum AliasCommands {
+    /// Set a short alias for a real arena ID
+    Set {
+        /// Short unique alias (e.g. ssb)
+        alias: String,
+        /// Real arena ID (e.g. 69cfe6fcece2ae9f75da12d1)
+        arena_id: String,
+        /// Optional human-readable name of the arena (e.g. "Spawn Strike 3")
+        #[arg(short, long)]
+        name: Option<String>,
+    },
+    /// Remove an arena alias
+    Remove {
+        /// Short alias to remove
+        alias: String,
+    },
+    /// List all defined arena aliases
+    List,
 }
 
 #[derive(Subcommand)]
@@ -53,8 +90,8 @@ enum LibCommands {
     Add {
         /// Visible name of the bot family
         name: String,
-        /// Map association (e.g. spawn_strike_basic)
-        map: String,
+        /// Real arena ID or short alias
+        arena: String,
         /// Path to the compiled dynamic library (.so or .dll)
         path: PathBuf,
     },
@@ -102,7 +139,7 @@ fn get_cache_dir() -> PathBuf {
     PathBuf::from("./bot_cache")
 }
 
-fn generate_default_state(map_name: &str, width: u8, height: u8) -> GameState {
+fn generate_default_state(_arena_id: &str, width: u8, height: u8) -> GameState {
     let mut objects = Vec::new();
 
     // Spawn 1 for Bot1, Spawn 2 for Bot2
@@ -160,11 +197,50 @@ fn main() -> Result<()> {
         .unwrap_or_else(get_default_library_dir);
 
     match cli.command {
-        Commands::Lib { action } => match action {
-            LibCommands::Add { name, map, path } => {
+        Commands::Arena { action } => match action {
+            ArenaCommands::List => {
+                let arenas = bot_library::get_known_arenas();
+                println!("{:<30} | {:<25} | {:<10} | {}", "Arena Name", "Folder Name", "Advanced", "Arena ID");
+                println!("{}", "-".repeat(95));
+                for arena in arenas {
+                    println!("{:<30} | {:<25} | {:<10} | {}", arena.name, arena.folder_name, arena.advanced, arena.arena_id);
+                }
+            }
+        },
+        Commands::Alias { action } => match action {
+            AliasCommands::Set { alias, arena_id, name } => {
                 let mut lib = bot_library::BotLibrary::load(&library_path)?;
-                let entry = lib.add(&library_path, &name, &map, &path)?;
-                println!("Successfully added bot '{}:{}' (ID: {}) linked to map '{}'", entry.name, entry.version, entry.id, map);
+                lib.set_alias(&library_path, &alias, &arena_id, name.as_deref())?;
+                if let Some(ref n) = name {
+                    println!("Successfully set alias '{}' -> '{}' ({})", alias, arena_id, n);
+                } else {
+                    println!("Successfully set alias '{}' -> '{}'", alias, arena_id);
+                }
+            }
+            AliasCommands::Remove { alias } => {
+                let mut lib = bot_library::BotLibrary::load(&library_path)?;
+                lib.remove_alias(&library_path, &alias)?;
+                println!("Successfully removed alias '{}'", alias);
+            }
+            AliasCommands::List => {
+                let lib = bot_library::BotLibrary::load(&library_path)?;
+                if lib.aliases.is_empty() {
+                    println!("No arena aliases defined.");
+                } else {
+                    println!("{:<15} | {:<25} | {}", "Alias", "Arena Name", "Arena ID");
+                    println!("{}", "-".repeat(70));
+                    for (alias, target) in &lib.aliases {
+                        let name_display = if target.name.is_empty() { "-" } else { &target.name };
+                        println!("{:<15} | {:<25} | {}", alias, name_display, target.arena_id);
+                    }
+                }
+            }
+        },
+        Commands::Lib { action } => match action {
+            LibCommands::Add { name, arena, path } => {
+                let mut lib = bot_library::BotLibrary::load(&library_path)?;
+                let entry = lib.add(&library_path, &name, &arena, &path)?;
+                println!("Successfully added bot '{}:{}' (ID: {}) linked to arena ID '{}'", entry.name, entry.version, entry.id, entry.arena_id);
             }
             LibCommands::Rename { old_name, new_name } => {
                 let mut lib = bot_library::BotLibrary::load(&library_path)?;
@@ -181,17 +257,18 @@ fn main() -> Result<()> {
                 if lib.bots.is_empty() {
                     println!("The bot library is empty.");
                 } else {
-                    println!("{:<5} | {:<20} | {:<20} | {}", "ID", "Visible Name", "Map Association", "Binary Path");
-                    println!("{}", "-".repeat(80));
+                    println!("{:<5} | {:<20} | {:<30} | {}", "ID", "Visible Name", "Arena Link", "Binary Path");
+                    println!("{}", "-".repeat(90));
                     for bot in lib.bots {
                         let visible_name = format!("{}:{}", bot.name, bot.version);
-                        println!("{:<5} | {:<20} | {:<20} | {}", bot.id, visible_name, bot.map, bot.path);
+                        println!("{:<5} | {:<20} | {:<30} | {}", bot.id, visible_name, bot.arena_id, bot.path);
                     }
                 }
             }
         },
-        Commands::Run { bot1, bot2, map, ticks } => {
+        Commands::Run { bot1, bot2, arena, ticks } => {
             let lib = bot_library::BotLibrary::load(&library_path)?;
+            let arena_id = lib.resolve_arena_id(&arena);
             
             // Resolve Bot 1 path
             let path1 = if let Ok(id) = bot1.parse::<u32>() {
@@ -224,7 +301,7 @@ fn main() -> Result<()> {
             println!("Loading Bot 1: {:?}", bot1_path);
             println!("Loading Bot 2: {:?}", bot2_path);
 
-            let initial_state = generate_default_state(&map, 100, 100);
+            let initial_state = generate_default_state(&arena_id, 100, 100);
             let rules = Ruleset {
                 tick_limit: ticks,
                 cpu_time_limit: 1000,
@@ -248,7 +325,7 @@ fn main() -> Result<()> {
 
             let mut executor = executor::RunExecutor::new(initial_state, &p1, &p2, rules)?;
 
-            println!("Starting simulation on map '{}'...", map);
+            println!("Starting simulation on arena ID '{}'...", arena_id);
             loop {
                 match executor.step_tick()? {
                     Some(result) => {
@@ -265,3 +342,4 @@ fn main() -> Result<()> {
 
     Ok(())
 }
+
