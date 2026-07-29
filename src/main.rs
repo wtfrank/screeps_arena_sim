@@ -56,6 +56,9 @@ enum Commands {
         bot2: String,
         /// Real arena ID or short alias
         arena: String,
+        /// Optional layout ID or layout alias to use instead of random selection
+        #[arg(short, long)]
+        layout: Option<String>,
         /// Maximum ticks to simulate
         #[arg(short, long, default_value_t = 1000)]
         ticks: u32,
@@ -162,7 +165,14 @@ fn get_cache_dir() -> PathBuf {
     PathBuf::from("./bot_cache")
 }
 
-fn generate_default_state(library_dir: &std::path::Path, arena_id: &str, width: u8, height: u8) -> Result<GameState> {
+fn generate_default_state(
+    library_dir: &std::path::Path,
+    arena_id: &str,
+    specified_layout: Option<&str>,
+    layout_aliases: &std::collections::HashMap<String, String>,
+    width: u8,
+    height: u8,
+) -> Result<GameState> {
     let mut objects = Vec::new();
 
     // Spawn 1 for Bot1, Spawn 2 for Bot2
@@ -203,7 +213,14 @@ fn generate_default_state(library_dir: &std::path::Path, arena_id: &str, width: 
         fatigue: 0,
     });
 
-    let terrain = bot_library::load_arena_terrain(library_dir, arena_id, width, height)?;
+    let terrain = bot_library::load_arena_terrain(
+        library_dir,
+        arena_id,
+        specified_layout,
+        layout_aliases,
+        width,
+        height,
+    )?;
 
     Ok(GameState {
         tick: 1,
@@ -317,7 +334,7 @@ fn main() -> Result<()> {
                 }
             }
         },
-        Commands::Run { bot1, bot2, arena, ticks } => {
+        Commands::Run { bot1, bot2, arena, layout, ticks } => {
             let lib = bot_library::BotLibrary::load(&library_path)?;
             let arena_id = lib.resolve_arena_id(&arena);
             
@@ -352,7 +369,7 @@ fn main() -> Result<()> {
             println!("Loading Bot 1: {:?}", bot1_path);
             println!("Loading Bot 2: {:?}", bot2_path);
 
-            let initial_state = generate_default_state(&library_path, &arena_id, 100, 100)?;
+            let initial_state = generate_default_state(&library_path, &arena_id, layout.as_deref(), &lib.layout_aliases, 100, 100)?;
             let rules = Ruleset {
                 tick_limit: ticks,
                 cpu_time_limit: 1000,

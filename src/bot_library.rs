@@ -55,12 +55,26 @@ pub fn get_known_arenas() -> Vec<KnownArena> {
 }
 
 /// Attempts to load arena layout terrain data from local files stored in XDG_DATA library_dir/layouts for a given arena_id.
-/// Selects a layout at random if multiple layout files exist for the arena.
+/// If `specified_layout` (a layout alias or game ID) is provided, that specific layout is loaded.
+/// Otherwise, selects a layout at random if multiple layout files exist for the arena.
 /// Returns an error if no valid layout is available.
-pub fn load_arena_terrain(library_dir: &Path, arena_id: &str, width: u8, height: u8) -> Result<Vec<Vec<crate::models::Terrain>>> {
+pub fn load_arena_terrain(
+    library_dir: &Path,
+    arena_id: &str,
+    specified_layout: Option<&str>,
+    layout_aliases: &HashMap<String, String>,
+    width: u8,
+    height: u8,
+) -> Result<Vec<Vec<crate::models::Terrain>>> {
     let width_u = width as usize;
     let height_u = height as usize;
     let mut available_layouts = Vec::new();
+
+    // Resolve specified layout if alias
+    let target_layout_id_or_file = specified_layout.map(|l| {
+        let trimmed = l.trim();
+        layout_aliases.get(trimmed).map(|s| s.as_str()).unwrap_or(trimmed)
+    });
 
     // Scan <library_dir>/layouts/ directory under XDG data
     let layouts_dir = library_dir.join("layouts");
@@ -80,14 +94,36 @@ pub fn load_arena_terrain(library_dir: &Path, arena_id: &str, width: u8, height:
     for path in available_layouts {
         if let Ok(content) = fs::read_to_string(&path) {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                // Check if json matches this arena
-                let layout_arena = json.pointer("/game/arena")
-                    .or_else(|| json.get("arena"))
-                    .and_then(|v| v.as_str());
+                let game_id = json.pointer("/game/game/_id")
+                    .or_else(|| json.pointer("/game/_id"))
+                    .or_else(|| json.get("_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_else(|| {
+                        path.file_stem().and_then(|s| s.to_str()).unwrap_or("")
+                    });
 
-                if let Some(target_arena) = layout_arena {
-                    if target_arena != arena_id {
+                let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+                // If specific layout was requested, match by game_id, filename, or stem
+                if let Some(target) = target_layout_id_or_file {
+                    let matches = target == game_id
+                        || target == filename
+                        || path.file_stem().and_then(|s| s.to_str()) == Some(target)
+                        || path.to_string_lossy() == target;
+
+                    if !matches {
                         continue;
+                    }
+                } else {
+                    // Check if json matches this arena
+                    let layout_arena = json.pointer("/game/arena")
+                        .or_else(|| json.get("arena"))
+                        .and_then(|v| v.as_str());
+
+                    if let Some(target_arena) = layout_arena {
+                        if target_arena != arena_id {
+                            continue;
+                        }
                     }
                 }
 
@@ -104,12 +140,21 @@ pub fn load_arena_terrain(library_dir: &Path, arena_id: &str, width: u8, height:
     }
 
     if valid_grids.is_empty() {
-        return Err(anyhow::anyhow!("No available layouts found for arena ID '{}'. Game cannot be launched.", arena_id));
+        if let Some(target) = specified_layout {
+            return Err(anyhow::anyhow!("Specified layout ID/alias '{}' was not found or invalid.", target));
+        } else {
+            return Err(anyhow::anyhow!("No available layouts found for arena ID '{}'. Game cannot be launched.", arena_id));
+        }
     }
 
-    // Pick a layout at random
-    let idx = fastrand::usize(..valid_grids.len());
-    let (chosen_path, grid) = valid_grids.remove(idx);
+    // Pick specified layout (if requested) or pick a layout at random
+    let (chosen_path, grid) = if specified_layout.is_some() {
+        valid_grids.remove(0)
+    } else {
+        let idx = fastrand::usize(..valid_grids.len());
+        valid_grids.remove(idx)
+    };
+
     println!("Loaded terrain layout from: {:?}", chosen_path);
 
     Ok(grid)
