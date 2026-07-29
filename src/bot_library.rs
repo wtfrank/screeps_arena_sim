@@ -277,6 +277,10 @@ pub struct BotEntry {
     pub arena_id: String,
     pub path: String,
     pub sha256: String,
+    #[serde(default)]
+    pub crash_count: u32,
+    #[serde(default)]
+    pub stable_count: u32,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -339,6 +343,22 @@ impl BotLibrary {
             .context("Failed to serialize bot library metadata")?;
         fs::write(meta_path, content)
             .context("Failed to write bot library metadata file")?;
+        Ok(())
+    }
+
+    pub fn record_stable(&mut self, dir: &Path, bot_id: u32) -> Result<()> {
+        if let Some(bot) = self.bots.iter_mut().find(|b| b.id == bot_id) {
+            bot.stable_count += 1;
+            self.save(dir)?;
+        }
+        Ok(())
+    }
+
+    pub fn record_crash(&mut self, dir: &Path, bot_id: u32) -> Result<()> {
+        if let Some(bot) = self.bots.iter_mut().find(|b| b.id == bot_id) {
+            bot.crash_count += 1;
+            self.save(dir)?;
+        }
         Ok(())
     }
 
@@ -449,6 +469,8 @@ impl BotLibrary {
             arena_id,
             path: dest_path.to_string_lossy().to_string(),
             sha256,
+            crash_count: 0,
+            stable_count: 0,
         };
 
         self.bots.push(entry.clone());

@@ -11,6 +11,8 @@ pub struct RunExecutor {
     bot1_driver: BotDriver,
     bot2_driver: BotDriver,
     rules: Ruleset,
+    bot1_crashed: bool,
+    bot2_crashed: bool,
 }
 
 impl RunExecutor {
@@ -27,7 +29,17 @@ impl RunExecutor {
             bot1_driver,
             bot2_driver,
             rules,
+            bot1_crashed: false,
+            bot2_crashed: false,
         })
+    }
+
+    pub fn bot1_crashed(&self) -> bool {
+        self.bot1_crashed
+    }
+
+    pub fn bot2_crashed(&self) -> bool {
+        self.bot2_crashed
     }
 
     /// Ticks the simulation once, returning true if the run has ended (win, loss, or draw).
@@ -69,35 +81,69 @@ impl RunExecutor {
         let bot2_area_effects = self.get_mock_area_effects();
         let bot2_construction_sites = self.get_mock_construction_sites(false);
 
-        // 2. Run both bots in parallel threads
+        // 2. Run active (non-crashed) bots in parallel threads
         let timeout = Duration::from_millis(self.rules.cpu_time_limit as u64);
         let driver1 = &self.bot1_driver;
         let driver2 = &self.bot2_driver;
         let tick = self.state.tick;
+        let run_b1 = !self.bot1_crashed;
+        let run_b2 = !self.bot2_crashed;
 
         let (res1, res2) = thread_run_parallel(
             move || {
-                driver1.tick(
-                    tick, true, timeout,
-                    bot1_creeps, bot1_spawns, bot1_towers, bot1_extensions,
-                    bot1_ramparts, bot1_containers, bot1_roads, bot1_walls,
-                    bot1_resources, bot1_sources, bot1_flags, bot1_score_collectors,
-                    bot1_bonus_flags, bot1_area_effects, bot1_construction_sites,
-                )
+                if run_b1 {
+                    driver1.tick(
+                        tick, true, timeout,
+                        bot1_creeps, bot1_spawns, bot1_towers, bot1_extensions,
+                        bot1_ramparts, bot1_containers, bot1_roads, bot1_walls,
+                        bot1_resources, bot1_sources, bot1_flags, bot1_score_collectors,
+                        bot1_bonus_flags, bot1_area_effects, bot1_construction_sites,
+                    )
+                } else {
+                    Ok(Vec::new())
+                }
             },
             move || {
-                driver2.tick(
-                    tick, false, timeout,
-                    bot2_creeps, bot2_spawns, bot2_towers, bot2_extensions,
-                    bot2_ramparts, bot2_containers, bot2_roads, bot2_walls,
-                    bot2_resources, bot2_sources, bot2_flags, bot2_score_collectors,
-                    bot2_bonus_flags, bot2_area_effects, bot2_construction_sites,
-                )
+                if run_b2 {
+                    driver2.tick(
+                        tick, false, timeout,
+                        bot2_creeps, bot2_spawns, bot2_towers, bot2_extensions,
+                        bot2_ramparts, bot2_containers, bot2_roads, bot2_walls,
+                        bot2_resources, bot2_sources, bot2_flags, bot2_score_collectors,
+                        bot2_bonus_flags, bot2_area_effects, bot2_construction_sites,
+                    )
+                } else {
+                    Ok(Vec::new())
+                }
             }
         );
 
-        let actions1 = res1.context("Bot A crashed or timed out")?;
-        let actions2 = res2.context("Bot B crashed or timed out")?;
+        let actions1 = match res1 {
+            Ok(acts) => acts,
+            Err(e) => {
+                if !self.bot1_crashed {
+                    println!("Bot 1 crashed: {:?}", e);
+                    self.bot1_crashed = true;
+                }
+                Vec::new()
+            }
+        };
+
+        let actions2 = match res2 {
+            Ok(acts) => acts,
+            Err(e) => {
+                if !self.bot2_crashed {
+                    println!("Bot 2 crashed: {:?}", e);
+                    self.bot2_crashed = true;
+                }
+                Vec::new()
+            }
+        };
+
+        // If both bots crashed, check win condition immediately or return draw
+        if self.bot1_crashed && self.bot2_crashed {
+            return Ok(Some(self.check_win_condition(false)));
+        }
 
         // 3. Resolve actions
         self.resolve_actions(actions1, actions2);
@@ -132,6 +178,8 @@ impl RunExecutor {
                     SimulationResult::Bot2Win { reason: "Spawn destroyed".to_string() }
                 } else if limit_reached {
                     SimulationResult::Draw { reason: "Tick limit reached".to_string() }
+                } else if self.bot1_crashed && self.bot2_crashed {
+                    SimulationResult::Draw { reason: "Both bots crashed".to_string() }
                 } else {
                     SimulationResult::Draw { reason: "Both spawns destroyed simultaneously".to_string() }
                 }
@@ -567,11 +615,17 @@ where
     T2: Send,
 {
     std::thread::scope(|s| {
-        let handle1 = s.spawn(f1);
-        let handle2 = s.spawn(f2);
+        let handle1 = s.spawn(|| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(f1))
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("Bot A thread panicked")))
+        });
+        let handle2 = s.spawn(|| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(f2))
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("Bot B thread panicked")))
+        });
 
-        let res1 = handle1.join().unwrap_or_else(|_| Err(anyhow::anyhow!("Bot A thread panicked")));
-        let res2 = handle2.join().unwrap_or_else(|_| Err(anyhow::anyhow!("Bot B thread panicked")));
+        let res1 = handle1.join().unwrap_or_else(|_| Err(anyhow::anyhow!("Bot A thread join failed")));
+        let res2 = handle2.join().unwrap_or_else(|_| Err(anyhow::anyhow!("Bot B thread join failed")));
 
         (res1, res2)
     })

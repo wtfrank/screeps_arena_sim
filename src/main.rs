@@ -325,11 +325,11 @@ fn main() -> Result<()> {
                 if lib.bots.is_empty() {
                     println!("The bot library is empty.");
                 } else {
-                    println!("{:<5} | {:<20} | {:<30} | {}", "ID", "Visible Name", "Arena Link", "Binary Path");
-                    println!("{}", "-".repeat(90));
+                    println!("{:<5} | {:<20} | {:<25} | {:<8} | {:<8} | {}", "ID", "Visible Name", "Arena Link", "Stable", "Crashes", "Binary Path");
+                    println!("{}", "-".repeat(110));
                     for bot in lib.bots {
                         let visible_name = format!("{}:{}", bot.name, bot.version);
-                        println!("{:<5} | {:<20} | {:<30} | {}", bot.id, visible_name, bot.arena_id, bot.path);
+                        println!("{:<5} | {:<20} | {:<25} | {:<8} | {:<8} | {}", bot.id, visible_name, bot.arena_id, bot.stable_count, bot.crash_count, bot.path);
                     }
                 }
             }
@@ -338,33 +338,35 @@ fn main() -> Result<()> {
             let lib = bot_library::BotLibrary::load(&library_path)?;
             let arena_id = lib.resolve_arena_id(&arena);
             
-            // Resolve Bot 1 path
-            let path1 = if let Ok(id) = bot1.parse::<u32>() {
-                lib.bots.iter().find(|b| b.id == id).map(|b| &b.path)
+            // Resolve Bot 1
+            let bot1_entry = if let Ok(id) = bot1.parse::<u32>() {
+                lib.bots.iter().find(|b| b.id == id)
             } else {
                 let parts: Vec<&str> = bot1.split(':').collect();
                 if parts.len() == 2 {
                     let version = parts[1].parse::<u32>().unwrap_or(0);
-                    lib.bots.iter().find(|b| b.name == parts[0] && b.version == version).map(|b| &b.path)
+                    lib.bots.iter().find(|b| b.name == parts[0] && b.version == version)
                 } else {
-                    lib.bots.iter().filter(|b| b.name == bot1).max_by_key(|b| b.version).map(|b| &b.path)
+                    lib.bots.iter().filter(|b| b.name == bot1).max_by_key(|b| b.version)
                 }
-            };
-            let bot1_path = path1.context(format!("Failed to find Bot 1 matching: {}", bot1))?;
+            }.context(format!("Failed to find Bot 1 matching: {}", bot1))?;
+            let bot1_id = bot1_entry.id;
+            let bot1_path = &bot1_entry.path;
 
-            // Resolve Bot 2 path
-            let path2 = if let Ok(id) = bot2.parse::<u32>() {
-                lib.bots.iter().find(|b| b.id == id).map(|b| &b.path)
+            // Resolve Bot 2
+            let bot2_entry = if let Ok(id) = bot2.parse::<u32>() {
+                lib.bots.iter().find(|b| b.id == id)
             } else {
                 let parts: Vec<&str> = bot2.split(':').collect();
                 if parts.len() == 2 {
                     let version = parts[1].parse::<u32>().unwrap_or(0);
-                    lib.bots.iter().find(|b| b.name == parts[0] && b.version == version).map(|b| &b.path)
+                    lib.bots.iter().find(|b| b.name == parts[0] && b.version == version)
                 } else {
-                    lib.bots.iter().filter(|b| b.name == bot2).max_by_key(|b| b.version).map(|b| &b.path)
+                    lib.bots.iter().filter(|b| b.name == bot2).max_by_key(|b| b.version)
                 }
-            };
-            let bot2_path = path2.context(format!("Failed to find Bot 2 matching: {}", bot2))?;
+            }.context(format!("Failed to find Bot 2 matching: {}", bot2))?;
+            let bot2_id = bot2_entry.id;
+            let bot2_path = &bot2_entry.path;
 
             println!("Loading Bot 1: {:?}", bot1_path);
             println!("Loading Bot 2: {:?}", bot2_path);
@@ -398,6 +400,21 @@ fn main() -> Result<()> {
                 match executor.step_tick()? {
                     Some(result) => {
                         println!("Simulation finished! Result: {:?}", result);
+
+                        // Record crash and stable metrics in BotLibrary
+                        let mut update_lib = bot_library::BotLibrary::load(&library_path)?;
+                        if executor.bot1_crashed() {
+                            update_lib.record_crash(&library_path, bot1_id)?;
+                        } else {
+                            update_lib.record_stable(&library_path, bot1_id)?;
+                        }
+
+                        if executor.bot2_crashed() {
+                            update_lib.record_crash(&library_path, bot2_id)?;
+                        } else {
+                            update_lib.record_stable(&library_path, bot2_id)?;
+                        }
+
                         break;
                     }
                     None => {

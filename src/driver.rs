@@ -286,13 +286,25 @@ impl BotDriver {
                 *ctx.borrow_mut() = Some(context);
             });
 
-            unsafe {
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
                 tick_fn(local_ptr.0);
-            }
+            }));
 
             CURRENT_BOT_CONTEXT.with(|ctx| {
                 *ctx.borrow_mut() = None;
             });
+
+            if let Err(err) = res {
+                let msg = if let Some(s) = err.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = err.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "Bot panicked during tick".to_string()
+                };
+                return Err(anyhow::anyhow!("Bot panic: {}", msg));
+            }
+            Ok(())
         });
 
         // Simple watchdog implementation
@@ -308,7 +320,7 @@ impl BotDriver {
         }
 
         // Propagate thread execution failures/panics
-        handle.join().map_err(|_| anyhow::anyhow!("Bot panicked during execution"))?;
+        handle.join().map_err(|_| anyhow::anyhow!("Bot panicked during execution"))??;
 
         // Extract collected actions
         let collected = action_queue.lock().unwrap().clone();
