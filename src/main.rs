@@ -214,7 +214,7 @@ fn generate_default_state(
         fatigue: 0,
     });
 
-    let terrain = bot_library::load_arena_terrain(
+    let (terrain, layout_objects) = bot_library::load_arena_terrain(
         library_dir,
         arena_id,
         specified_layout,
@@ -224,11 +224,17 @@ fn generate_default_state(
         height,
     )?;
 
+    let final_objects = if !layout_objects.is_empty() {
+        layout_objects
+    } else {
+        objects
+    };
+
     Ok(GameState {
         tick: 1,
         width,
         height,
-        objects,
+        objects: final_objects,
         terrain,
     })
 }

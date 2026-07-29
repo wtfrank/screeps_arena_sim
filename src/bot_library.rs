@@ -78,7 +78,7 @@ pub fn load_arena_terrain(
     arena_aliases: &HashMap<String, ArenaAlias>,
     width: u8,
     height: u8,
-) -> Result<Vec<Vec<crate::models::Terrain>>> {
+) -> Result<(Vec<Vec<crate::models::Terrain>>, Vec<crate::models::GameObject>)> {
     let width_u = width as usize;
     let height_u = height as usize;
     let mut available_layouts = Vec::new();
@@ -184,7 +184,168 @@ pub fn load_arena_terrain(
 
     println!("Loaded terrain layout from: {:?}", chosen_path);
 
-    Ok(grid)
+    // Attempt to load objects associated with the chosen layout
+    let objects = load_layout_objects(&chosen_path);
+
+    Ok((grid, objects))
+}
+
+fn load_layout_objects(layout_path: &Path) -> Vec<crate::models::GameObject> {
+    let mut objects = Vec::new();
+
+    // 1. Try adjacent objects.json if layout_path is inside a layout directory (e.g. .../<game_id>/terrain.json)
+    let candidate_objects_path = if let Some(parent) = layout_path.parent() {
+        parent.join("objects.json")
+    } else {
+        layout_path.with_file_name("objects.json")
+    };
+
+    let objects_json_val = if candidate_objects_path.exists() {
+        fs::read_to_string(&candidate_objects_path)
+            .ok()
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+    } else {
+        None
+    };
+
+    let json_val = objects_json_val.or_else(|| {
+        fs::read_to_string(layout_path)
+            .ok()
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+    });
+
+    let Some(val) = json_val else {
+        return objects;
+    };
+
+    let arr = if let Some(a) = val.as_array() {
+        a
+    } else if let Some(a) = val.pointer("/game/game/objects").and_then(|v| v.as_array()) {
+        a
+    } else if let Some(a) = val.pointer("/game/objects").and_then(|v| v.as_array()) {
+        a
+    } else if let Some(a) = val.get("objects").and_then(|v| v.as_array()) {
+        a
+    } else {
+        return objects;
+    };
+
+    for item in arr {
+        let object_type = item.get("type")
+            .or_else(|| item.get("prototypeName"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        let x = item.get("x").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+        let y = item.get("y").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+        let pos = crate::models::Position { x, y };
+
+        let id = item.get("_id")
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| format!("{}_{}_{}", object_type, x, y));
+
+        let user = item.get("user").and_then(|v| v.as_str()).unwrap_or("");
+        let owner = match user {
+            "player1" | "1" => crate::models::Owner::Bot1,
+            "player2" | "2" => crate::models::Owner::Bot2,
+            _ => crate::models::Owner::Neutral,
+        };
+
+        let hits = item.get("hits").and_then(|v| v.as_u64()).unwrap_or(100) as u32;
+        let max_hits = item.get("hitsMax").and_then(|v| v.as_u64()).unwrap_or(hits as u64) as u32;
+        let energy = item.pointer("/store/energy").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let max_energy = item.pointer("/storeCapacityResource/energy")
+            .or_else(|| item.get("energyCapacity"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(energy as u64) as u32;
+
+        match object_type {
+            "creep" | "Creep" => {
+                let fatigue = item.get("fatigue").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+                objects.push(crate::models::GameObject::Creep {
+                    id, pos, hits, max_hits, owner, fatigue,
+                });
+            }
+            "spawn" | "StructureSpawn" => {
+                objects.push(crate::models::GameObject::Spawn {
+                    id, pos, hits, max_hits, owner, energy, max_energy,
+                });
+            }
+            "tower" | "StructureTower" => {
+                objects.push(crate::models::GameObject::Tower {
+                    id, pos, hits, max_hits, owner, energy, max_energy,
+                });
+            }
+            "extension" | "StructureExtension" => {
+                objects.push(crate::models::GameObject::Extension {
+                    id, pos, hits, max_hits, owner, energy, max_energy,
+                });
+            }
+            "rampart" | "StructureRampart" => {
+                objects.push(crate::models::GameObject::Rampart {
+                    id, pos, hits, max_hits, owner,
+                });
+            }
+            "container" | "StructureContainer" => {
+                objects.push(crate::models::GameObject::Container {
+                    id, pos, hits, max_hits, energy, max_energy,
+                });
+            }
+            "road" | "StructureRoad" => {
+                objects.push(crate::models::GameObject::Road {
+                    id, pos, hits, max_hits,
+                });
+            }
+            "constructedWall" | "wall" | "StructureWall" => {
+                objects.push(crate::models::GameObject::Wall {
+                    id, pos, hits, max_hits,
+                });
+            }
+            "constructionSite" | "ConstructionSite" => {
+                let progress = item.get("progress").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let progress_total = item.get("progressTotal").and_then(|v| v.as_u64()).unwrap_or(100) as u32;
+                objects.push(crate::models::GameObject::ConstructionSite {
+                    id, pos, owner, progress, progress_total,
+                });
+            }
+            "resource" | "Resource" => {
+                let amount = item.get("amount").and_then(|v| v.as_u64()).unwrap_or(100) as u32;
+                let resource_type = item.get("resourceType").and_then(|v| v.as_str()).unwrap_or("energy").to_string();
+                objects.push(crate::models::GameObject::Resource {
+                    id, pos, amount, resource_type,
+                });
+            }
+            "source" | "Source" => {
+                objects.push(crate::models::GameObject::Source {
+                    id, pos, energy, max_energy,
+                });
+            }
+            "flag" | "Flag" => {
+                objects.push(crate::models::GameObject::Flag {
+                    id, pos, owner,
+                });
+            }
+            "scoreCollector" | "ScoreCollector" => {
+                objects.push(crate::models::GameObject::ScoreCollector {
+                    id, pos, owner,
+                });
+            }
+            "bonusFlag" | "BonusFlag" => {
+                objects.push(crate::models::GameObject::BonusFlag {
+                    id, pos, owner,
+                });
+            }
+            "areaEffect" | "AreaEffect" => {
+                let effect_type = item.get("effectType").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                objects.push(crate::models::GameObject::AreaEffect {
+                    id, pos, effect_type,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    objects
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
