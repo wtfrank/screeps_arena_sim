@@ -8,8 +8,8 @@ use screeps_arena::ffi::ActionId;
 
 pub struct RunExecutor {
     state: GameState,
-    bot1_driver: BotDriver,
-    bot2_driver: BotDriver,
+    bot1_driver: Option<BotDriver>,
+    bot2_driver: Option<BotDriver>,
     rules: Ruleset,
     bot1_crashed: bool,
     bot2_crashed: bool,
@@ -22,15 +22,29 @@ impl RunExecutor {
         bot2_path: &std::path::Path,
         rules: Ruleset,
     ) -> Result<Self> {
-        let bot1_driver = BotDriver::load(bot1_path)?;
-        let bot2_driver = BotDriver::load(bot2_path)?;
+        let (bot1_driver, bot1_crashed) = match BotDriver::load(bot1_path) {
+            Ok(d) => (Some(d), false),
+            Err(e) => {
+                println!("Bot 1 crashed during initialization: {:?}", e);
+                (None, true)
+            }
+        };
+
+        let (bot2_driver, bot2_crashed) = match BotDriver::load(bot2_path) {
+            Ok(d) => (Some(d), false),
+            Err(e) => {
+                println!("Bot 2 crashed during initialization: {:?}", e);
+                (None, true)
+            }
+        };
+
         Ok(Self {
             state: initial_state,
             bot1_driver,
             bot2_driver,
             rules,
-            bot1_crashed: false,
-            bot2_crashed: false,
+            bot1_crashed,
+            bot2_crashed,
         })
     }
 
@@ -44,6 +58,10 @@ impl RunExecutor {
 
     /// Ticks the simulation once, returning true if the run has ended (win, loss, or draw).
     pub fn step_tick(&mut self) -> Result<Option<SimulationResult>> {
+        if self.bot1_crashed && self.bot2_crashed {
+            return Ok(Some(self.check_win_condition(false)));
+        }
+
         if self.state.tick >= self.rules.tick_limit {
             return Ok(Some(self.check_win_condition(true)));
         }
@@ -92,26 +110,34 @@ impl RunExecutor {
         let (res1, res2) = thread_run_parallel(
             move || {
                 if run_b1 {
-                    driver1.tick(
-                        tick, true, timeout,
-                        bot1_creeps, bot1_spawns, bot1_towers, bot1_extensions,
-                        bot1_ramparts, bot1_containers, bot1_roads, bot1_walls,
-                        bot1_resources, bot1_sources, bot1_flags, bot1_score_collectors,
-                        bot1_bonus_flags, bot1_area_effects, bot1_construction_sites,
-                    )
+                    if let Some(ref d1) = driver1 {
+                        d1.tick(
+                            tick, true, timeout,
+                            bot1_creeps, bot1_spawns, bot1_towers, bot1_extensions,
+                            bot1_ramparts, bot1_containers, bot1_roads, bot1_walls,
+                            bot1_resources, bot1_sources, bot1_flags, bot1_score_collectors,
+                            bot1_bonus_flags, bot1_area_effects, bot1_construction_sites,
+                        )
+                    } else {
+                        Ok(Vec::new())
+                    }
                 } else {
                     Ok(Vec::new())
                 }
             },
             move || {
                 if run_b2 {
-                    driver2.tick(
-                        tick, false, timeout,
-                        bot2_creeps, bot2_spawns, bot2_towers, bot2_extensions,
-                        bot2_ramparts, bot2_containers, bot2_roads, bot2_walls,
-                        bot2_resources, bot2_sources, bot2_flags, bot2_score_collectors,
-                        bot2_bonus_flags, bot2_area_effects, bot2_construction_sites,
-                    )
+                    if let Some(ref d2) = driver2 {
+                        d2.tick(
+                            tick, false, timeout,
+                            bot2_creeps, bot2_spawns, bot2_towers, bot2_extensions,
+                            bot2_ramparts, bot2_containers, bot2_roads, bot2_walls,
+                            bot2_resources, bot2_sources, bot2_flags, bot2_score_collectors,
+                            bot2_bonus_flags, bot2_area_effects, bot2_construction_sites,
+                        )
+                    } else {
+                        Ok(Vec::new())
+                    }
                 } else {
                     Ok(Vec::new())
                 }

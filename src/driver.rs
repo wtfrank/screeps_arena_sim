@@ -215,7 +215,19 @@ impl BotDriver {
         }
 
         // Initialize the bot state (Tick 0)
-        let bot_ptr = unsafe { bot_initialize_fn() };
+        let bot_ptr = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe { bot_initialize_fn() })) {
+            Ok(ptr) => ptr,
+            Err(err) => {
+                let msg = if let Some(s) = err.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = err.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "Bot panicked during initialization".to_string()
+                };
+                return Err(anyhow::anyhow!("Initialization panic: {}", msg));
+            }
+        };
 
         // Transmute symbols to extend their lifetime to match the struct ownership
         let bot_tick_fn = unsafe { std::mem::transmute(bot_tick_fn) };
