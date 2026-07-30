@@ -165,7 +165,7 @@ fn get_cache_dir() -> PathBuf {
     PathBuf::from("./bot_cache")
 }
 
-fn generate_default_state(
+fn load_state(
     library_dir: &std::path::Path,
     arena_id: &str,
     specified_layout: Option<&str>,
@@ -174,47 +174,8 @@ fn generate_default_state(
     width: u8,
     height: u8,
 ) -> Result<GameState> {
-    let mut objects = Vec::new();
 
-    // Spawn 1 for Bot1, Spawn 2 for Bot2
-    objects.push(GameObject::Spawn {
-        id: "spawn1".to_string(),
-        pos: Position { x: 10, y: height / 2 },
-        hits: 5000,
-        max_hits: 5000,
-        owner: Owner::Bot1,
-        energy: 1000,
-        max_energy: 1000,
-    });
-    objects.push(GameObject::Spawn {
-        id: "spawn2".to_string(),
-        pos: Position { x: width - 11, y: height / 2 },
-        hits: 5000,
-        max_hits: 5000,
-        owner: Owner::Bot2,
-        energy: 1000,
-        max_energy: 1000,
-    });
-
-    // A few initial creeps for testing
-    objects.push(GameObject::Creep {
-        id: "creep1".to_string(),
-        pos: Position { x: 12, y: height / 2 },
-        hits: 100,
-        max_hits: 100,
-        owner: Owner::Bot1,
-        fatigue: 0,
-    });
-    objects.push(GameObject::Creep {
-        id: "creep2".to_string(),
-        pos: Position { x: width - 13, y: height / 2 },
-        hits: 100,
-        max_hits: 100,
-        owner: Owner::Bot2,
-        fatigue: 0,
-    });
-
-    let (terrain, layout_objects) = bot_library::load_arena_terrain(
+    let (terrain, objects) = bot_library::load_arena_terrain(
         library_dir,
         arena_id,
         specified_layout,
@@ -224,17 +185,11 @@ fn generate_default_state(
         height,
     )?;
 
-    let final_objects = if !layout_objects.is_empty() {
-        layout_objects
-    } else {
-        objects
-    };
-
     Ok(GameState {
         tick: 1,
         width,
         height,
-        objects: final_objects,
+        objects,
         terrain,
     })
 }
@@ -386,7 +341,7 @@ fn main() -> Result<()> {
                 println!("No Bot 2 specified: running single-bot simulation");
             }
 
-            let initial_state = generate_default_state(&library_path, &arena_id, layout.as_deref(), &lib.layout_aliases, &lib.aliases, 100, 100)?;
+            let initial_state = load_state(&library_path, &arena_id, layout.as_deref(), &lib.layout_aliases, &lib.aliases, 100, 100)?;
             let rules = Ruleset {
                 tick_limit: ticks,
                 cpu_time_limit: 1000,
