@@ -19,7 +19,7 @@ impl RunExecutor {
     pub fn new(
         initial_state: GameState,
         bot1_path: &std::path::Path,
-        bot2_path: &std::path::Path,
+        bot2_path: Option<&std::path::Path>,
         rules: Ruleset,
     ) -> Result<Self> {
         let (bot1_driver, bot1_crashed) = match BotDriver::load(bot1_path) {
@@ -30,12 +30,16 @@ impl RunExecutor {
             }
         };
 
-        let (bot2_driver, bot2_crashed) = match BotDriver::load(bot2_path) {
-            Ok(d) => (Some(d), false),
-            Err(e) => {
-                println!("Bot 2 crashed during initialization: {:?}", e);
-                (None, true)
+        let (bot2_driver, bot2_crashed) = if let Some(p2) = bot2_path {
+            match BotDriver::load(p2) {
+                Ok(d) => (Some(d), false),
+                Err(e) => {
+                    println!("Bot 2 crashed during initialization: {:?}", e);
+                    (None, true)
+                }
             }
+        } else {
+            (None, false)
         };
 
         Ok(Self {

@@ -109,14 +109,14 @@ Deletes bot revisions from the library and cleans up their local binary files.
 ---
 
 ### `run`
-Runs a simulation match between two bots on a specified arena.
+Runs a simulation match with 1 or 2 bots on a specified arena.
 
-#### `run <BOT1> <BOT2> <ARENA> [-l <LAYOUT>] [-t <TICKS>]`
+#### `run <ARENA> <BOT1> [<BOT2>] [-l <LAYOUT>] [-t <TICKS>]`
 Executes a match loading an arena terrain layout.
 - **Arguments**:
-  - `BOT1`: Name:version or integer ID of Bot 1 (e.g. `wtfbot:0` or `1`).
-  - `BOT2`: Name:version or integer ID of Bot 2 (e.g. `wtfbot:1` or `2`).
   - `ARENA`: Real arena ID or configured short alias.
+  - `BOT1`: Name:version or integer ID of Bot 1 (e.g. `wtfbot:0` or `1`).
+  - `BOT2`: Optional Name:version or integer ID of Bot 2 (e.g. `wtfbot:1` or `2`). If omitted, Bot 1 runs solo without an opponent.
   - `-l`, `--layout`: Optional specific layout game ID or layout alias (overrides random layout selection).
   - `-t`, `--ticks`: Maximum ticks to simulate (default: 1000).
 

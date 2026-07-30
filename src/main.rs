@@ -48,14 +48,14 @@ enum Commands {
         #[command(subcommand)]
         action: LibCommands,
     },
-    /// Run a simulation match between two bots
+    /// Run a simulation match with 1 or 2 bots
     Run {
-        /// Name:version or ID of the first bot (e.g. wtfbot:0)
-        bot1: String,
-        /// Name:version or ID of the second bot (e.g. wtfbot:1)
-        bot2: String,
         /// Real arena ID or short alias
         arena: String,
+        /// Name:version or ID of the first bot (e.g. wtfbot:0)
+        bot1: String,
+        /// Optional name:version or ID of the second bot (e.g. wtfbot:1)
+        bot2: Option<String>,
         /// Optional layout ID or layout alias to use instead of random selection
         #[arg(short, long)]
         layout: Option<String>,
@@ -342,7 +342,7 @@ fn main() -> Result<()> {
                 }
             }
         },
-        Commands::Run { bot1, bot2, arena, layout, ticks } => {
+        Commands::Run { arena, bot1, bot2, layout, ticks } => {
             let lib = bot_library::BotLibrary::load(&library_path)?;
             let arena_id = lib.resolve_arena_id(&arena);
             
@@ -361,23 +361,30 @@ fn main() -> Result<()> {
             let bot1_id = bot1_entry.id;
             let bot1_path = &bot1_entry.path;
 
-            // Resolve Bot 2
-            let bot2_entry = if let Ok(id) = bot2.parse::<u32>() {
-                lib.bots.iter().find(|b| b.id == id)
-            } else {
-                let parts: Vec<&str> = bot2.split(':').collect();
-                if parts.len() == 2 {
-                    let version = parts[1].parse::<u32>().unwrap_or(0);
-                    lib.bots.iter().find(|b| b.name == parts[0] && b.version == version)
+            // Resolve optional Bot 2
+            let bot2_resolved = if let Some(ref b2_str) = bot2 {
+                let entry = if let Ok(id) = b2_str.parse::<u32>() {
+                    lib.bots.iter().find(|b| b.id == id)
                 } else {
-                    lib.bots.iter().filter(|b| b.name == bot2).max_by_key(|b| b.version)
-                }
-            }.context(format!("Failed to find Bot 2 matching: {}", bot2))?;
-            let bot2_id = bot2_entry.id;
-            let bot2_path = &bot2_entry.path;
+                    let parts: Vec<&str> = b2_str.split(':').collect();
+                    if parts.len() == 2 {
+                        let version = parts[1].parse::<u32>().unwrap_or(0);
+                        lib.bots.iter().find(|b| b.name == parts[0] && b.version == version)
+                    } else {
+                        lib.bots.iter().filter(|b| b.name == b2_str.as_str()).max_by_key(|b| b.version)
+                    }
+                }.context(format!("Failed to find Bot 2 matching: {}", b2_str))?;
+                Some((entry.id, entry.path.clone()))
+            } else {
+                None
+            };
 
             println!("Loading Bot 1: {:?}", bot1_path);
-            println!("Loading Bot 2: {:?}", bot2_path);
+            if let Some((_, ref p2)) = bot2_resolved {
+                println!("Loading Bot 2: {:?}", p2);
+            } else {
+                println!("No Bot 2 specified: running single-bot simulation");
+            }
 
             let initial_state = generate_default_state(&library_path, &arena_id, layout.as_deref(), &lib.layout_aliases, &lib.aliases, 100, 100)?;
             let rules = Ruleset {
@@ -386,22 +393,23 @@ fn main() -> Result<()> {
                 win_condition: WinCondition::DestroyEnemySpawn,
             };
 
-            // dlopen() (used by libloading) caches library handles by file path: loading the same
-            // .so path twice in one process returns the same handle, sharing all global static memory
-            // between both bots. We copy each bot to a unique path in the user-owned XDG cache
-            // directory so they get independent address spaces. We use the process ID to avoid
-            // collisions with concurrent simulator instances.
             let cache_dir = get_cache_dir();
             std::fs::create_dir_all(&cache_dir).context("Failed to create cache directory")?;
             let pid = std::process::id();
             let p1 = cache_dir.join(format!("bot_1_{}.so", pid));
-            let p2 = cache_dir.join(format!("bot_2_{}.so", pid));
             std::fs::copy(std::path::Path::new(bot1_path), &p1)
                 .context("Failed to copy Bot 1 to cache")?;
-            std::fs::copy(std::path::Path::new(bot2_path), &p2)
-                .context("Failed to copy Bot 2 to cache")?;
 
-            let mut executor = executor::RunExecutor::new(initial_state, &p1, &p2, rules)?;
+            let p2_opt = if let Some((_, ref b2_path)) = bot2_resolved {
+                let p2 = cache_dir.join(format!("bot_2_{}.so", pid));
+                std::fs::copy(std::path::Path::new(b2_path), &p2)
+                    .context("Failed to copy Bot 2 to cache")?;
+                Some(p2)
+            } else {
+                None
+            };
+
+            let mut executor = executor::RunExecutor::new(initial_state, &p1, p2_opt.as_deref(), rules)?;
 
             println!("Starting simulation on arena ID '{}'...", arena_id);
             loop {
@@ -417,10 +425,12 @@ fn main() -> Result<()> {
                             update_lib.record_stable(&library_path, bot1_id)?;
                         }
 
-                        if executor.bot2_crashed() {
-                            update_lib.record_crash(&library_path, bot2_id)?;
-                        } else {
-                            update_lib.record_stable(&library_path, bot2_id)?;
+                        if let Some((b2_id, _)) = bot2_resolved {
+                            if executor.bot2_crashed() {
+                                update_lib.record_crash(&library_path, b2_id)?;
+                            } else {
+                                update_lib.record_stable(&library_path, b2_id)?;
+                            }
                         }
 
                         break;
