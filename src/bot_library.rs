@@ -240,8 +240,10 @@ fn load_layout_objects(layout_path: &Path) -> Vec<crate::models::GameObject> {
         let y = item.get("y").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
         let pos = crate::models::Position { x, y };
 
+        // in the screeps replay, it seemed that the default map objects had id of type integer,
+        // while a creep that was spawned during tick 1 had id of type string.
         let id = item.get("_id")
-            .map(|v| v.to_string())
+            .and_then(|v| v.as_str().map(|s| s.to_string()).or_else(|| v.as_i64().map(|i| i.to_string())).or_else(|| v.as_u64().map(|u| u.to_string())))
             .unwrap_or_else(|| format!("{}_{}_{}", object_type, x, y));
 
         let user = item.get("user").and_then(|v| v.as_str()).unwrap_or("");
