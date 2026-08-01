@@ -207,7 +207,7 @@ pub enum WorkerToHostMessage {
 }
 
 use std::os::unix::net::UnixStream;
-use std::os::unix::io::{AsRawFd, FromRawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 use std::process::{Command, Stdio, Child};
 use std::io::{BufReader, BufRead, Read, Write};
 
@@ -217,19 +217,11 @@ pub struct BotDriver {
 }
 
 impl BotDriver {
-    pub fn load(path: &Path, bot_label: &str) -> Result<Self> {
+    pub fn load(path: &Path, bot_label: &str, enable_debug: bool) -> Result<Self> {
         let (host_stream, worker_stream) = UnixStream::pair().context("Failed to create UnixSocket pair")?;
         
         let exe_path = std::env::current_exe().context("Failed to get current executable path")?;
-        let worker_fd = worker_stream.as_raw_fd();
-
-        let mut command = Command::new(exe_path);
-        command.arg("bot-runner")
-            .arg(path.to_str().unwrap())
-            .arg(worker_fd.to_string())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        let worker_fd = worker_stream.into_raw_fd();
 
         // Ensure worker_fd remains open across exec
         unsafe {
@@ -238,6 +230,27 @@ impl BotDriver {
                 libc::fcntl(worker_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
             }
         }
+
+        let mut command = if enable_debug {
+            let port = 12345;
+            let mut cmd = Command::new("gdbserver");
+            cmd.arg(format!(":{}", port))
+                .arg(exe_path)
+                .arg("bot-runner")
+                .arg(path.to_str().unwrap())
+                .arg(worker_fd.to_string());
+            cmd
+        } else {
+            let mut cmd = Command::new(exe_path);
+            cmd.arg("bot-runner")
+                .arg(path.to_str().unwrap())
+                .arg(worker_fd.to_string());
+            cmd
+        };
+
+        command.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         let mut child = command.spawn().context("Failed to spawn bot-runner worker process")?;
 
@@ -262,9 +275,30 @@ impl BotDriver {
             });
         }
 
-        // Wait for initialization acknowledgment from worker
-        host_stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-        let init_msg: WorkerToHostMessage = bincode_read(&host_stream)?;
+        if enable_debug {
+            // Give gdbserver a brief moment to print "Listening on port..."
+            thread::sleep(Duration::from_millis(50));
+            println!("\ngdb -ex \"target remote :12345\" -ex \"break wtfbot::Bot::tick\" -ex \"continue\"");
+        }
+
+        // Wait for initialization acknowledgment from worker with child process crash monitoring
+        let init_msg = loop {
+            host_stream.set_read_timeout(Some(Duration::from_millis(200)))?;
+            match bincode_read::<WorkerToHostMessage, _>(&host_stream) {
+                Ok(msg) => break msg,
+                Err(e) => {
+                    if let Ok(Some(status)) = child.try_wait() {
+                        return Err(anyhow::anyhow!("Bot worker process exited unexpectedly during init with status: {}", status));
+                    }
+                    if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+                        if io_err.kind() == std::io::ErrorKind::WouldBlock || io_err.kind() == std::io::ErrorKind::TimedOut {
+                            continue;
+                        }
+                    }
+                    return Err(anyhow::anyhow!("IPC read error during init: {:?}", e));
+                }
+            }
+        };
         match init_msg {
             WorkerToHostMessage::Initialized(Ok(())) => {},
             WorkerToHostMessage::Initialized(Err(err)) => {
@@ -290,12 +324,27 @@ impl BotDriver {
     ) -> Result<Vec<QueuedAction>> {
         bincode_write(&self.stream, &HostToWorkerMessage::Tick(msg))?;
 
-        self.stream.set_read_timeout(Some(timeout))?;
-        let response: WorkerToHostMessage = match bincode_read(&self.stream) {
-            Ok(res) => res,
-            Err(e) => {
-                let _ = self.child.kill();
-                return Err(anyhow::anyhow!("Worker process timeout or IPC crash: {:?}", e));
+        let start = std::time::Instant::now();
+        let response = loop {
+            self.stream.set_read_timeout(Some(Duration::from_millis(100)))?;
+            match bincode_read::<WorkerToHostMessage, _>(&self.stream) {
+                Ok(res) => break res,
+                Err(e) => {
+                    if let Ok(Some(status)) = self.child.try_wait() {
+                        return Err(anyhow::anyhow!("Worker process exited with status: {}", status));
+                    }
+                    if start.elapsed() > timeout {
+                        let _ = self.child.kill();
+                        return Err(anyhow::anyhow!("Worker process timeout after {:?}", timeout));
+                    }
+                    if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+                        if io_err.kind() == std::io::ErrorKind::WouldBlock || io_err.kind() == std::io::ErrorKind::TimedOut {
+                            continue;
+                        }
+                    }
+                    let _ = self.child.kill();
+                    return Err(anyhow::anyhow!("Worker process IPC error: {:?}", e));
+                }
             }
         };
 
@@ -334,8 +383,8 @@ fn bincode_read<T: serde::de::DeserializeOwned, R: Read>(mut reader: R) -> Resul
     Ok(val)
 }
 
-/// Worker mode entrypoint executed by child processes (`screeps_arena_sim bot-runner <bot_path> <fd>`)
-pub fn run_bot_runner_process(bot_path: &str, socket_fd: i32) -> Result<()> {
+/// Worker mode entrypoint executed by child processes (`screeps_arena_sim bot-runner <bot_path> <fd> [--pause]`)
+pub fn run_bot_runner_process(bot_path: &str, socket_fd: i32, pause: bool) -> Result<()> {
     let stream = unsafe { UnixStream::from_raw_fd(socket_fd) };
 
     let lib = unsafe { Library::new(bot_path).context("Failed to load bot library in worker")? };

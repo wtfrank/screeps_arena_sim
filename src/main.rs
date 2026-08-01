@@ -62,6 +62,9 @@ enum Commands {
         /// Maximum ticks to simulate
         #[arg(short, long, default_value_t = 1000)]
         ticks: u32,
+        /// Launch GDB terminal wrapper for debugging a specific bot (1, 2, or "all")
+        #[arg(long)]
+        debug_bot: Option<String>,
     },
     /// Internal worker process command for executing a bot in an isolated process over IPC
     #[command(hide = true)]
@@ -70,6 +73,9 @@ enum Commands {
         bot_path: String,
         /// Unix socket FD for IPC communication
         socket_fd: i32,
+        /// Pause process before calling bot_initialize() for debugger attachment
+        #[arg(long)]
+        pause: bool,
     },
 }
 
@@ -305,7 +311,7 @@ fn main() -> Result<()> {
                 }
             }
         },
-        Commands::Run { arena, bot1, bot2, layout, ticks } => {
+        Commands::Run { arena, bot1, bot2, layout, ticks, debug_bot } => {
             let lib = bot_library::BotLibrary::load(&library_path)?;
             let arena_id = lib.resolve_arena_id(&arena);
             
@@ -357,7 +363,13 @@ fn main() -> Result<()> {
             };
 
             let p2_opt = bot2_resolved.as_ref().map(|(_, path)| std::path::Path::new(path));
-            let mut executor = executor::RunExecutor::new(initial_state, std::path::Path::new(bot1_path), p2_opt, rules)?;
+            let mut executor = executor::RunExecutor::new(
+                initial_state,
+                std::path::Path::new(bot1_path),
+                p2_opt,
+                rules,
+                debug_bot.as_deref(),
+            )?;
 
             println!("Starting simulation on arena ID '{}'...", arena_id);
             loop {
@@ -389,8 +401,8 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Commands::BotRunner { bot_path, socket_fd } => {
-            driver::run_bot_runner_process(&bot_path, socket_fd)?;
+        Commands::BotRunner { bot_path, socket_fd, pause } => {
+            driver::run_bot_runner_process(&bot_path, socket_fd, pause)?;
         }
     }
 

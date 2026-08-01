@@ -13,6 +13,8 @@ pub struct RunExecutor {
     rules: Ruleset,
     bot1_crashed: bool,
     bot2_crashed: bool,
+    debug_b1: bool,
+    debug_b2: bool,
 }
 
 impl RunExecutor {
@@ -21,8 +23,18 @@ impl RunExecutor {
         bot1_path: &std::path::Path,
         bot2_path: Option<&std::path::Path>,
         rules: Ruleset,
+        debug_bot: Option<&str>,
     ) -> Result<Self> {
-        let (bot1_driver, bot1_crashed) = match BotDriver::load(bot1_path, "Bot 1") {
+        let debug_b1 = match debug_bot {
+            Some("1") | Some("bot1") | Some("all") => true,
+            _ => false,
+        };
+        let debug_b2 = match debug_bot {
+            Some("2") | Some("bot2") | Some("all") => true,
+            _ => false,
+        };
+
+        let (bot1_driver, bot1_crashed) = match BotDriver::load(bot1_path, "Bot 1", debug_b1) {
             Ok(d) => (Some(d), false),
             Err(e) => {
                 println!("Bot 1 crashed during initialization: {:?}", e);
@@ -31,7 +43,7 @@ impl RunExecutor {
         };
 
         let (bot2_driver, bot2_crashed) = if let Some(p2) = bot2_path {
-            match BotDriver::load(p2, "Bot 2") {
+            match BotDriver::load(p2, "Bot 2", debug_b2) {
                 Ok(d) => (Some(d), false),
                 Err(e) => {
                     println!("Bot 2 crashed during initialization: {:?}", e);
@@ -49,6 +61,8 @@ impl RunExecutor {
             rules,
             bot1_crashed,
             bot2_crashed,
+            debug_b1,
+            debug_b2,
         })
     }
 
@@ -104,12 +118,9 @@ impl RunExecutor {
         let bot2_construction_sites = self.get_mock_construction_sites(false);
 
         // 2. Run active (non-crashed) bots in parallel threads
-        let timeout = Duration::from_millis(self.rules.cpu_time_limit as u64);
-        let driver1 = &self.bot1_driver;
-        let driver2 = &self.bot2_driver;
+        let timeout_b1 = if self.debug_b1 { Duration::from_secs(3600) } else { Duration::from_millis(self.rules.cpu_time_limit as u64) };
+        let timeout_b2 = if self.debug_b2 { Duration::from_secs(3600) } else { Duration::from_millis(self.rules.cpu_time_limit as u64) };
         let tick = self.state.tick;
-        let run_b1 = !self.bot1_crashed;
-        let run_b2 = !self.bot2_crashed;
 
         let (res1, res2) = thread_run_parallel(
             || {
@@ -134,7 +145,7 @@ impl RunExecutor {
                             area_effects: bot1_area_effects,
                             construction_sites: bot1_construction_sites,
                         };
-                        d1.tick(msg, timeout)
+                        d1.tick(msg, timeout_b1)
                     } else {
                         Ok(Vec::new())
                     }
@@ -164,7 +175,7 @@ impl RunExecutor {
                             area_effects: bot2_area_effects,
                             construction_sites: bot2_construction_sites,
                         };
-                        d2.tick(msg, timeout)
+                        d2.tick(msg, timeout_b2)
                     } else {
                         Ok(Vec::new())
                     }
