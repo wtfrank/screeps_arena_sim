@@ -63,6 +63,14 @@ enum Commands {
         #[arg(short, long, default_value_t = 1000)]
         ticks: u32,
     },
+    /// Internal worker process command for executing a bot in an isolated process over IPC
+    #[command(hide = true)]
+    BotRunner {
+        /// Path to the bot binary .so file
+        bot_path: String,
+        /// Unix socket FD for IPC communication
+        socket_fd: i32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -348,23 +356,8 @@ fn main() -> Result<()> {
                 win_condition: WinCondition::DestroyEnemySpawn,
             };
 
-            let cache_dir = get_cache_dir();
-            std::fs::create_dir_all(&cache_dir).context("Failed to create cache directory")?;
-            let pid = std::process::id();
-            let p1 = cache_dir.join(format!("bot_1_{}.so", pid));
-            std::fs::copy(std::path::Path::new(bot1_path), &p1)
-                .context("Failed to copy Bot 1 to cache")?;
-
-            let p2_opt = if let Some((_, ref b2_path)) = bot2_resolved {
-                let p2 = cache_dir.join(format!("bot_2_{}.so", pid));
-                std::fs::copy(std::path::Path::new(b2_path), &p2)
-                    .context("Failed to copy Bot 2 to cache")?;
-                Some(p2)
-            } else {
-                None
-            };
-
-            let mut executor = executor::RunExecutor::new(initial_state, &p1, p2_opt.as_deref(), rules)?;
+            let p2_opt = bot2_resolved.as_ref().map(|(_, path)| std::path::Path::new(path));
+            let mut executor = executor::RunExecutor::new(initial_state, std::path::Path::new(bot1_path), p2_opt, rules)?;
 
             println!("Starting simulation on arena ID '{}'...", arena_id);
             loop {
@@ -395,6 +388,9 @@ fn main() -> Result<()> {
                     }
                 }
             }
+        }
+        Commands::BotRunner { bot_path, socket_fd } => {
+            driver::run_bot_runner_process(&bot_path, socket_fd)?;
         }
     }
 

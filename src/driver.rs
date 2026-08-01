@@ -40,7 +40,7 @@ struct BotExecutionContext {
     pub construction_site_cache: Vec<screeps_arena::objects::ConstructionSite>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct QueuedAction {
     pub actor_id: String,
     pub action: ActionId,
@@ -173,177 +173,281 @@ extern "C" fn queue_action_callback(
     }
 }
 
-pub struct BotDriver {
-    _lib: Library,
-    bot_ptr: *mut c_void,
-    bot_tick_fn: Symbol<'static, unsafe extern "C" fn(*mut c_void)>,
-    bot_free_fn: Symbol<'static, unsafe extern "C" fn(*mut c_void)>,
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct BotTickMessage {
+    pub tick: u32,
+    pub is_bot_1: bool,
+    pub creeps: Vec<screeps_arena::objects::Creep>,
+    pub spawns: Vec<screeps_arena::objects::StructureSpawn>,
+    pub towers: Vec<screeps_arena::objects::StructureTower>,
+    pub extensions: Vec<screeps_arena::objects::StructureExtension>,
+    pub ramparts: Vec<screeps_arena::objects::StructureRampart>,
+    pub containers: Vec<screeps_arena::objects::StructureContainer>,
+    pub roads: Vec<screeps_arena::objects::StructureRoad>,
+    pub walls: Vec<screeps_arena::objects::StructureWall>,
+    pub resources: Vec<screeps_arena::objects::Resource>,
+    pub sources: Vec<screeps_arena::objects::Source>,
+    pub flags: Vec<screeps_arena::objects::Flag>,
+    pub score_collectors: Vec<screeps_arena::objects::ScoreCollector>,
+    pub bonus_flags: Vec<screeps_arena::objects::BonusFlag>,
+    pub area_effects: Vec<screeps_arena::objects::AreaEffect>,
+    pub construction_sites: Vec<screeps_arena::objects::ConstructionSite>,
 }
 
-unsafe impl Send for BotDriver {}
-unsafe impl Sync for BotDriver {}
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub enum HostToWorkerMessage {
+    Tick(BotTickMessage),
+    Shutdown,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub enum WorkerToHostMessage {
+    TickResult(Result<Vec<QueuedAction>, String>),
+    Initialized(Result<(), String>),
+}
+
+use std::os::unix::net::UnixStream;
+use std::os::unix::io::{AsRawFd, FromRawFd};
+use std::process::{Command, Stdio, Child};
+use std::io::{BufReader, BufRead, Read, Write};
+
+pub struct BotDriver {
+    child: Child,
+    stream: UnixStream,
+}
 
 impl BotDriver {
-    pub fn load(path: &Path) -> Result<Self> {
-        let lib = unsafe { Library::new(path).context("Failed to dynamically load bot library binary")? };
+    pub fn load(path: &Path, bot_label: &str) -> Result<Self> {
+        let (host_stream, worker_stream) = UnixStream::pair().context("Failed to create UnixSocket pair")?;
+        
+        let exe_path = std::env::current_exe().context("Failed to get current executable path")?;
+        let worker_fd = worker_stream.as_raw_fd();
 
-        // Bind lifecycle symbols
-        let set_host_interface_fn: Symbol<unsafe extern "C" fn(HostInterface)> = unsafe {
-            lib.get(b"set_host_interface").context("Failed to bind set_host_interface symbol")?
-        };
-        let bot_initialize_fn: Symbol<unsafe extern "C" fn() -> *mut c_void> = unsafe {
-            lib.get(b"bot_initialize").context("Failed to bind bot_initialize symbol")?
-        };
-        let bot_tick_fn: Symbol<unsafe extern "C" fn(*mut c_void)> = unsafe {
-            lib.get(b"bot_tick").context("Failed to bind bot_tick symbol")?
-        };
-        let bot_free_fn: Symbol<unsafe extern "C" fn(*mut c_void)> = unsafe {
-            lib.get(b"bot_free").context("Failed to bind bot_free symbol")?
-        };
+        let mut command = Command::new(exe_path);
+        command.arg("bot-runner")
+            .arg(path.to_str().unwrap())
+            .arg(worker_fd.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
-        // Initialize host callbacks inside the bot DLL
-        let interface = HostInterface {
-            get_ticks: get_ticks_callback,
-            get_cpu_time: get_cpu_time_callback,
-            get_objects: get_objects_callback,
-            get_terrain_at: get_terrain_at_callback,
-            queue_action: queue_action_callback,
-        };
-
+        // Ensure worker_fd remains open across exec
         unsafe {
-            set_host_interface_fn(interface);
+            let flags = libc::fcntl(worker_fd, libc::F_GETFD);
+            if flags != -1 {
+                libc::fcntl(worker_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+            }
         }
 
-        // Initialize the bot state (Tick 0)
-        let bot_ptr = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe { bot_initialize_fn() })) {
-            Ok(ptr) => ptr,
-            Err(err) => {
-                let msg = if let Some(s) = err.downcast_ref::<&str>() {
-                    s.to_string()
-                } else if let Some(s) = err.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "Bot panicked during initialization".to_string()
-                };
-                return Err(anyhow::anyhow!("Initialization panic: {}", msg));
-            }
-        };
+        let mut child = command.spawn().context("Failed to spawn bot-runner worker process")?;
 
-        // Transmute symbols to extend their lifetime to match the struct ownership
-        let bot_tick_fn = unsafe { std::mem::transmute(bot_tick_fn) };
-        let bot_free_fn = unsafe { std::mem::transmute(bot_free_fn) };
+        // Read stdout and stderr asynchronously in background threads with log prefixing
+        if let Some(stdout) = child.stdout.take() {
+            let label = bot_label.to_string();
+            thread::spawn(move || {
+                let reader = BufReader::new(stdout);
+                for line in reader.lines().flatten() {
+                    println!("[{}] {}", label, line);
+                }
+            });
+        }
+
+        if let Some(stderr) = child.stderr.take() {
+            let label = bot_label.to_string();
+            thread::spawn(move || {
+                let reader = BufReader::new(stderr);
+                for line in reader.lines().flatten() {
+                    eprintln!("[{}] {}", label, line);
+                }
+            });
+        }
+
+        // Wait for initialization acknowledgment from worker
+        host_stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        let init_msg: WorkerToHostMessage = bincode_read(&host_stream)?;
+        match init_msg {
+            WorkerToHostMessage::Initialized(Ok(())) => {},
+            WorkerToHostMessage::Initialized(Err(err)) => {
+                let _ = child.kill();
+                return Err(anyhow::anyhow!("Bot initialization error: {}", err));
+            }
+            _ => {
+                let _ = child.kill();
+                return Err(anyhow::anyhow!("Unexpected worker initialization response"));
+            }
+        }
 
         Ok(Self {
-            _lib: lib,
-            bot_ptr,
-            bot_tick_fn,
-            bot_free_fn,
+            child,
+            stream: host_stream,
         })
     }
 
-    /// Ticks the bot within a watchdog thread. If it hangs or takes longer than the timeout, fails.
     pub fn tick(
-        &self,
-        tick: u32,
-        is_bot_1: bool,
+        &mut self,
+        msg: BotTickMessage,
         timeout: Duration,
-        // Caches containing the state matching the bot's perspective:
-        creeps: Vec<screeps_arena::objects::Creep>,
-        spawns: Vec<screeps_arena::objects::StructureSpawn>,
-        towers: Vec<screeps_arena::objects::StructureTower>,
-        extensions: Vec<screeps_arena::objects::StructureExtension>,
-        ramparts: Vec<screeps_arena::objects::StructureRampart>,
-        containers: Vec<screeps_arena::objects::StructureContainer>,
-        roads: Vec<screeps_arena::objects::StructureRoad>,
-        walls: Vec<screeps_arena::objects::StructureWall>,
-        resources: Vec<screeps_arena::objects::Resource>,
-        sources: Vec<screeps_arena::objects::Source>,
-        flags: Vec<screeps_arena::objects::Flag>,
-        score_collectors: Vec<screeps_arena::objects::ScoreCollector>,
-        bonus_flags: Vec<screeps_arena::objects::BonusFlag>,
-        area_effects: Vec<screeps_arena::objects::AreaEffect>,
-        construction_sites: Vec<screeps_arena::objects::ConstructionSite>,
     ) -> Result<Vec<QueuedAction>> {
-        let action_queue = Arc::new(Mutex::new(Vec::new()));
-        let queue_clone = Arc::clone(&action_queue);
-        let bot_ptr = SendPtr(self.bot_ptr);
-        let tick_fn = Arc::new(self.bot_tick_fn.clone());
+        bincode_write(&self.stream, &HostToWorkerMessage::Tick(msg))?;
 
-        // Package execution context
-        let context = BotExecutionContext {
-            tick,
-            is_bot_1,
-            action_queue: queue_clone,
-            creep_cache: creeps,
-            spawn_cache: spawns,
-            tower_cache: towers,
-            extension_cache: extensions,
-            rampart_cache: ramparts,
-            container_cache: containers,
-            road_cache: roads,
-            wall_cache: walls,
-            resource_cache: resources,
-            source_cache: sources,
-            flag_cache: flags,
-            score_collector_cache: score_collectors,
-            bonus_flag_cache: bonus_flags,
-            area_effect_cache: area_effects,
-            construction_site_cache: construction_sites,
+        self.stream.set_read_timeout(Some(timeout))?;
+        let response: WorkerToHostMessage = match bincode_read(&self.stream) {
+            Ok(res) => res,
+            Err(e) => {
+                let _ = self.child.kill();
+                return Err(anyhow::anyhow!("Worker process timeout or IPC crash: {:?}", e));
+            }
         };
 
-        // Run bot inside worker thread to enforce CPU limit watchdog
-        let handle = thread::spawn(move || {
-            let local_ptr = bot_ptr;
-            CURRENT_BOT_CONTEXT.with(|ctx| {
-                *ctx.borrow_mut() = Some(context);
-            });
-
-            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-                tick_fn(local_ptr.0);
-            }));
-
-            CURRENT_BOT_CONTEXT.with(|ctx| {
-                *ctx.borrow_mut() = None;
-            });
-
-            if let Err(err) = res {
-                let msg = if let Some(s) = err.downcast_ref::<&str>() {
-                    s.to_string()
-                } else if let Some(s) = err.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "Bot panicked during tick".to_string()
-                };
-                return Err(anyhow::anyhow!("Bot panic: {}", msg));
-            }
-            Ok(())
-        });
-
-        // Simple watchdog implementation
-        let start = std::time::Instant::now();
-        while !handle.is_finished() {
-            if start.elapsed() > timeout {
-                return Err(anyhow::anyhow!(
-                    "Execution timeout: Bot exceeded the CPU limit of {:?}",
-                    timeout
-                ));
-            }
-            thread::sleep(Duration::from_millis(1));
+        match response {
+            WorkerToHostMessage::TickResult(Ok(actions)) => Ok(actions),
+            WorkerToHostMessage::TickResult(Err(err_msg)) => Err(anyhow::anyhow!("Bot panic: {}", err_msg)),
+            _ => Err(anyhow::anyhow!("Invalid response from worker process")),
         }
-
-        // Propagate thread execution failures/panics
-        handle.join().map_err(|_| anyhow::anyhow!("Bot panicked during execution"))??;
-
-        // Extract collected actions
-        let collected = action_queue.lock().unwrap().clone();
-        Ok(collected)
     }
 }
 
 impl Drop for BotDriver {
     fn drop(&mut self) {
-        unsafe {
-            (self.bot_free_fn)(self.bot_ptr);
+        let _ = bincode_write(&self.stream, &HostToWorkerMessage::Shutdown);
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn bincode_write<T: serde::Serialize, W: Write>(mut writer: W, val: &T) -> Result<()> {
+    let bytes = serde_json::to_vec(val)?;
+    let len = bytes.len() as u32;
+    writer.write_all(&len.to_be_bytes())?;
+    writer.write_all(&bytes)?;
+    writer.flush()?;
+    Ok(())
+}
+
+fn bincode_read<T: serde::de::DeserializeOwned, R: Read>(mut reader: R) -> Result<T> {
+    let mut len_bytes = [0u8; 4];
+    reader.read_exact(&mut len_bytes)?;
+    let len = u32::from_be_bytes(len_bytes) as usize;
+    let mut buf = vec![0u8; len];
+    reader.read_exact(&mut buf)?;
+    let val = serde_json::from_slice(&buf)?;
+    Ok(val)
+}
+
+/// Worker mode entrypoint executed by child processes (`screeps_arena_sim bot-runner <bot_path> <fd>`)
+pub fn run_bot_runner_process(bot_path: &str, socket_fd: i32) -> Result<()> {
+    let stream = unsafe { UnixStream::from_raw_fd(socket_fd) };
+
+    let lib = unsafe { Library::new(bot_path).context("Failed to load bot library in worker")? };
+
+    let set_host_interface_fn: Symbol<unsafe extern "C" fn(HostInterface)> = unsafe {
+        lib.get(b"set_host_interface").context("Failed to bind set_host_interface")?
+    };
+    let bot_initialize_fn: Symbol<unsafe extern "C" fn() -> *mut c_void> = unsafe {
+        lib.get(b"bot_initialize").context("Failed to bind bot_initialize")?
+    };
+    let bot_tick_fn: Symbol<unsafe extern "C" fn(*mut c_void)> = unsafe {
+        lib.get(b"bot_tick").context("Failed to bind bot_tick")?
+    };
+
+    let interface = HostInterface {
+        get_ticks: get_ticks_callback,
+        get_cpu_time: get_cpu_time_callback,
+        get_objects: get_objects_callback,
+        get_terrain_at: get_terrain_at_callback,
+        queue_action: queue_action_callback,
+    };
+
+    unsafe {
+        set_host_interface_fn(interface);
+    }
+
+    let init_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        bot_initialize_fn()
+    }));
+
+    let bot_ptr = match init_res {
+        Ok(ptr) if !ptr.is_null() => {
+            bincode_write(&stream, &WorkerToHostMessage::Initialized(Ok(())))?;
+            ptr
         }
+        Ok(_) => {
+            bincode_write(&stream, &WorkerToHostMessage::Initialized(Err("bot_initialize returned null".to_string())))?;
+            return Ok(());
+        }
+        Err(err) => {
+            let msg = panic_err_to_string(err);
+            bincode_write(&stream, &WorkerToHostMessage::Initialized(Err(msg)))?;
+            return Ok(());
+        }
+    };
+
+    loop {
+        let msg: HostToWorkerMessage = match bincode_read(&stream) {
+            Ok(m) => m,
+            Err(_) => break, // Host closed socket or exited
+        };
+
+        match msg {
+            HostToWorkerMessage::Shutdown => break,
+            HostToWorkerMessage::Tick(tick_msg) => {
+                let action_queue = Arc::new(Mutex::new(Vec::new()));
+                let context = BotExecutionContext {
+                    tick: tick_msg.tick,
+                    is_bot_1: tick_msg.is_bot_1,
+                    action_queue: action_queue.clone(),
+                    creep_cache: tick_msg.creeps,
+                    spawn_cache: tick_msg.spawns,
+                    tower_cache: tick_msg.towers,
+                    extension_cache: tick_msg.extensions,
+                    rampart_cache: tick_msg.ramparts,
+                    container_cache: tick_msg.containers,
+                    road_cache: tick_msg.roads,
+                    wall_cache: tick_msg.walls,
+                    resource_cache: tick_msg.resources,
+                    source_cache: tick_msg.sources,
+                    flag_cache: tick_msg.flags,
+                    score_collector_cache: tick_msg.score_collectors,
+                    bonus_flag_cache: tick_msg.bonus_flags,
+                    area_effect_cache: tick_msg.area_effects,
+                    construction_site_cache: tick_msg.construction_sites,
+                };
+
+                CURRENT_BOT_CONTEXT.with(|ctx| {
+                    *ctx.borrow_mut() = Some(context);
+                });
+
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+                    bot_tick_fn(bot_ptr);
+                }));
+
+                CURRENT_BOT_CONTEXT.with(|ctx| {
+                    *ctx.borrow_mut() = None;
+                });
+
+                match res {
+                    Ok(()) => {
+                        let actions = action_queue.lock().unwrap().clone();
+                        bincode_write(&stream, &WorkerToHostMessage::TickResult(Ok(actions)))?;
+                    }
+                    Err(err) => {
+                        let msg = panic_err_to_string(err);
+                        bincode_write(&stream, &WorkerToHostMessage::TickResult(Err(msg)))?;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn panic_err_to_string(err: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = err.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = err.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "Panic occurred".to_string()
     }
 }

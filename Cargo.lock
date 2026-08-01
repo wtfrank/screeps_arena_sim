@@ -283,6 +283,7 @@ dependencies = [
  "anyhow",
  "clap",
  "fastrand",
+ "libc",
  "libloading",
  "mock-screeps-arena",
  "serde",

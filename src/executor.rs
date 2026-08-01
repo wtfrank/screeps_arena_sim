@@ -22,7 +22,7 @@ impl RunExecutor {
         bot2_path: Option<&std::path::Path>,
         rules: Ruleset,
     ) -> Result<Self> {
-        let (bot1_driver, bot1_crashed) = match BotDriver::load(bot1_path) {
+        let (bot1_driver, bot1_crashed) = match BotDriver::load(bot1_path, "Bot 1") {
             Ok(d) => (Some(d), false),
             Err(e) => {
                 println!("Bot 1 crashed during initialization: {:?}", e);
@@ -31,7 +31,7 @@ impl RunExecutor {
         };
 
         let (bot2_driver, bot2_crashed) = if let Some(p2) = bot2_path {
-            match BotDriver::load(p2) {
+            match BotDriver::load(p2, "Bot 2") {
                 Ok(d) => (Some(d), false),
                 Err(e) => {
                     println!("Bot 2 crashed during initialization: {:?}", e);
@@ -112,16 +112,29 @@ impl RunExecutor {
         let run_b2 = !self.bot2_crashed;
 
         let (res1, res2) = thread_run_parallel(
-            move || {
-                if run_b1 {
-                    if let Some(ref d1) = driver1 {
-                        d1.tick(
-                            tick, true, timeout,
-                            bot1_creeps, bot1_spawns, bot1_towers, bot1_extensions,
-                            bot1_ramparts, bot1_containers, bot1_roads, bot1_walls,
-                            bot1_resources, bot1_sources, bot1_flags, bot1_score_collectors,
-                            bot1_bonus_flags, bot1_area_effects, bot1_construction_sites,
-                        )
+            || {
+                if !self.bot1_crashed {
+                    if let Some(ref mut d1) = self.bot1_driver {
+                        let msg = crate::driver::BotTickMessage {
+                            tick,
+                            is_bot_1: true,
+                            creeps: bot1_creeps,
+                            spawns: bot1_spawns,
+                            towers: bot1_towers,
+                            extensions: bot1_extensions,
+                            ramparts: bot1_ramparts,
+                            containers: bot1_containers,
+                            roads: bot1_roads,
+                            walls: bot1_walls,
+                            resources: bot1_resources,
+                            sources: bot1_sources,
+                            flags: bot1_flags,
+                            score_collectors: bot1_score_collectors,
+                            bonus_flags: bot1_bonus_flags,
+                            area_effects: bot1_area_effects,
+                            construction_sites: bot1_construction_sites,
+                        };
+                        d1.tick(msg, timeout)
                     } else {
                         Ok(Vec::new())
                     }
@@ -129,16 +142,29 @@ impl RunExecutor {
                     Ok(Vec::new())
                 }
             },
-            move || {
-                if run_b2 {
-                    if let Some(ref d2) = driver2 {
-                        d2.tick(
-                            tick, false, timeout,
-                            bot2_creeps, bot2_spawns, bot2_towers, bot2_extensions,
-                            bot2_ramparts, bot2_containers, bot2_roads, bot2_walls,
-                            bot2_resources, bot2_sources, bot2_flags, bot2_score_collectors,
-                            bot2_bonus_flags, bot2_area_effects, bot2_construction_sites,
-                        )
+            || {
+                if !self.bot2_crashed {
+                    if let Some(ref mut d2) = self.bot2_driver {
+                        let msg = crate::driver::BotTickMessage {
+                            tick,
+                            is_bot_1: false,
+                            creeps: bot2_creeps,
+                            spawns: bot2_spawns,
+                            towers: bot2_towers,
+                            extensions: bot2_extensions,
+                            ramparts: bot2_ramparts,
+                            containers: bot2_containers,
+                            roads: bot2_roads,
+                            walls: bot2_walls,
+                            resources: bot2_resources,
+                            sources: bot2_sources,
+                            flags: bot2_flags,
+                            score_collectors: bot2_score_collectors,
+                            bonus_flags: bot2_bonus_flags,
+                            area_effects: bot2_area_effects,
+                            construction_sites: bot2_construction_sites,
+                        };
+                        d2.tick(msg, timeout)
                     } else {
                         Ok(Vec::new())
                     }
