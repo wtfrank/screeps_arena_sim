@@ -118,16 +118,39 @@ def filter_objects(objects: list[dict]) -> list[dict]:
     Remove mid-spawn creeps from the tick 1 object list.
 
     Any spawn with a `spawning` field has a creep currently being produced.
-    That creep's _id is listed in spawning.id — we exclude it because it did
-    not exist as a real creep at tick 0.
+    That creep's _id is listed in spawning.id — we exclude the creep because it did
+    not exist as a real creep at tick 0. We also strip the `spawning` dict from the spawn itself
+    so the spawn is not discarded.
     """
     spawning_ids = set()
     for obj in objects:
         spawning = obj.get("spawning")
         if isinstance(spawning, dict) and "id" in spawning:
-            spawning_ids.add(spawning["id"])
+            spawning_ids.add(str(spawning["id"]))
 
-    return [obj for obj in objects if obj.get("_id") not in spawning_ids]
+    filtered = []
+    for obj in objects:
+        obj_id = str(obj.get("_id")) if "_id" in obj else None
+        if obj_id in spawning_ids:
+            continue
+
+        spawning = obj.get("spawning")
+        obj_type = obj.get("type") or obj.get("prototypeName")
+        
+        # Creep being spawned
+        if obj_type in ("creep", "Creep") and (spawning is True or isinstance(spawning, dict)):
+            continue
+
+        # If it's a spawn currently spawning a creep, keep the spawn structure but remove the spawning key
+        if obj_type in ("spawn", "StructureSpawn") and isinstance(spawning, dict):
+            obj_copy = dict(obj)
+            del obj_copy["spawning"]
+            filtered.append(obj_copy)
+            continue
+
+        filtered.append(obj)
+
+    return filtered
 
 
 def save_layout(data_dir: Path, arena_id: str, game_id: str,

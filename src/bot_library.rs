@@ -263,6 +263,11 @@ fn load_layout_objects(layout_path: &Path) -> Vec<crate::models::GameObject> {
 
         match object_type {
             "creep" | "Creep" => {
+                if let Some(spawning) = item.get("spawning") {
+                    if spawning.as_bool() == Some(true) || spawning.is_object() {
+                        continue;
+                    }
+                }
                 let fatigue = item.get("fatigue").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
                 objects.push(crate::models::GameObject::Creep {
                     id, pos, hits, max_hits, owner, fatigue,
