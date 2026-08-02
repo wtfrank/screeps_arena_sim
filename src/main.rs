@@ -44,9 +44,9 @@ enum Commands {
         action: LayoutAliasCommands,
     },
     /// Manage the bot library
-    Lib {
+    Bot {
         #[command(subcommand)]
-        action: LibCommands,
+        action: BotCommands,
     },
     /// Run a simulation match with 1 or 2 bots
     Run {
@@ -125,7 +125,7 @@ enum LayoutAliasCommands {
 }
 
 #[derive(Subcommand)]
-enum LibCommands {
+enum BotCommands {
     /// Add a compiled bot binary to the library
     Add {
         /// Visible name of the bot family
@@ -281,23 +281,23 @@ fn main() -> Result<()> {
                 }
             }
         },
-        Commands::Lib { action } => match action {
-            LibCommands::Add { name, arena, path } => {
+        Commands::Bot { action } => match action {
+            BotCommands::Add { name, arena, path } => {
                 let mut lib = bot_library::BotLibrary::load(&library_path)?;
                 let entry = lib.add(&library_path, &name, &arena, &path)?;
                 println!("Successfully added bot '{}:{}' (ID: {}) linked to arena ID '{}'", entry.name, entry.version, entry.id, entry.arena_id);
             }
-            LibCommands::Rename { old_name, new_name } => {
+            BotCommands::Rename { old_name, new_name } => {
                 let mut lib = bot_library::BotLibrary::load(&library_path)?;
                 lib.rename(&library_path, &old_name, &new_name)?;
                 println!("Successfully renamed all bot revisions named '{}' to '{}'", old_name, new_name);
             }
-            LibCommands::Delete { name_or_version } => {
+            BotCommands::Delete { name_or_version } => {
                 let mut lib = bot_library::BotLibrary::load(&library_path)?;
                 lib.delete(&library_path, &name_or_version)?;
                 println!("Successfully deleted '{}' from the library", name_or_version);
             }
-            LibCommands::List => {
+            BotCommands::List => {
                 let lib = bot_library::BotLibrary::load(&library_path)?;
                 if lib.bots.is_empty() {
                     println!("The bot library is empty.");

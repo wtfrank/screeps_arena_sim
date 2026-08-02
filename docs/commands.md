@@ -75,10 +75,10 @@ Removes an existing layout alias.
 
 ---
 
-### `lib`
+### `bot`
 Subcommands to manage compiled bot binaries in the local library.
 
-#### `lib list`
+#### `bot list`
 Lists all bot revisions currently stored in the library.
 - **Output Columns**:
   - `ID`: Auto-incremented unique integer identifier.
@@ -86,7 +86,7 @@ Lists all bot revisions currently stored in the library.
   - `Arena Link`: Real arena ID string linked to this bot.
   - `Binary Path`: Local storage path of the `.so` or `.dll` file.
 
-#### `lib add <NAME> <ARENA> <PATH>`
+#### `bot add <NAME> <ARENA> <PATH>`
 Adds a new compiled bot binary to the library linked to a real arena ID or alias.
 - **De-duplication**: Calculates the SHA256 checksum of the source binary. If the same binary already exists in the library, the addition is rejected.
 - **Versioning**: Auto-assigns the next version revision (starting from `0`) for the bot name.
@@ -95,13 +95,13 @@ Adds a new compiled bot binary to the library linked to a real arena ID or alias
   - `ARENA`: Real arena ID or configured short alias.
   - `PATH`: Path to the source compiled shared library.
 
-#### `lib rename <OLD_NAME> <NEW_NAME>`
+#### `bot rename <OLD_NAME> <NEW_NAME>`
 Renames a bot family across all of its versions.
 - **Arguments**:
   - `OLD_NAME`: Current name of the family.
   - `NEW_NAME`: New name to assign.
 
-#### `lib delete <NAME_OR_VERSION>`
+#### `bot delete <NAME_OR_VERSION>`
 Deletes bot revisions from the library and cleans up their local binary files.
 - **Arguments**:
   - `NAME_OR_VERSION`: Can be a full visible name (e.g., `wtfbot:2`) to delete a specific revision, or just the family name (e.g., `wtfbot`) to delete all revisions of that bot.
