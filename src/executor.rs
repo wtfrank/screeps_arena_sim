@@ -628,10 +628,10 @@ impl RunExecutor {
 
                 for obj in &self.state.objects {
                     if let GameObject::Spawn {
-                        id, owner: o, pos, ..
+                        id, owner: o, pos, spawning, ..
                     } = obj
                     {
-                        if id == spawn_id && *o == owner {
+                        if id == spawn_id && *o == owner && spawning.is_none() {
                             spawn_pos = Some(*pos);
                             break;
                         }
@@ -788,22 +788,76 @@ impl RunExecutor {
                 let decay = if move_parts > 0 { move_parts * 2 } else { 2 };
                 *fatigue = fatigue.saturating_sub(decay);
             }
-            if let GameObject::Spawn { spawning, .. } = obj {
+            if let GameObject::Spawn { pos, spawning, .. } = obj {
                 if let Some(progress) = spawning {
                     progress.remaining_time = progress.remaining_time.saturating_sub(1);
                     if progress.remaining_time == 0 {
-                        completed_creep_ids.push(progress.creep_id.clone());
+                        completed_creep_ids.push((*pos, progress.creep_id.clone()));
                         *spawning = None;
                     }
                 }
             }
         }
+        for (spawn_pos, creep_id) in completed_creep_ids {
+            let mut free_spot = None;
 
-        // Mark completed creeps as spawning = false
-        for obj in &mut self.state.objects {
-            if let GameObject::Creep { id, spawning, .. } = obj {
-                if completed_creep_ids.contains(id) {
-                    *spawning = false;
+            // Search 8 adjacent positions around spawn_pos
+            for dx in [-1i32, 0, 1] {
+                for dy in [-1i32, 0, 1] {
+                    if dx == 0 && dy == 0 {
+                        continue;
+                    }
+                    let nx = spawn_pos.x as i32 + dx;
+                    let ny = spawn_pos.y as i32 + dy;
+
+                    if nx >= 0 && nx < self.state.width as i32 && ny >= 0 && ny < self.state.height as i32 {
+                        let candidate = Position { x: nx as u8, y: ny as u8 };
+                        if self.state.terrain[candidate.x as usize][candidate.y as usize] == Terrain::Wall {
+                            continue;
+                        }
+
+                        // Check if tile is occupied by static structure or another creep
+                        let occupied = self.state.objects.iter().any(|o| match o {
+                            GameObject::Creep { pos, .. } => *pos == candidate,
+                            GameObject::Spawn { pos, .. }
+                            | GameObject::Tower { pos, .. }
+                            | GameObject::Extension { pos, .. }
+                            | GameObject::Wall { pos, .. } => *pos == candidate,
+                            _ => false,
+                        });
+
+                        if !occupied {
+                            free_spot = Some(candidate);
+                            break;
+                        }
+                    }
+                }
+                if free_spot.is_some() {
+                    break;
+                }
+            }
+
+            if let Some(new_pos) = free_spot {
+                for obj in &mut self.state.objects {
+                    if let GameObject::Creep { id, pos, spawning, .. } = obj {
+                        if id == &creep_id {
+                            *pos = new_pos;
+                            *spawning = false;
+                        }
+                    }
+                }
+            } else {
+                // No free adjacent spot available; re-mark spawn as occupied so it retries next tick
+                for obj in &mut self.state.objects {
+                    if let GameObject::Spawn { pos, spawning, .. } = obj {
+                        if *pos == spawn_pos {
+                            *spawning = Some(crate::models::SpawningProgress {
+                                creep_id: creep_id.clone(),
+                                need_time: 1,
+                                remaining_time: 1,
+                            });
+                        }
+                    }
                 }
             }
         }
