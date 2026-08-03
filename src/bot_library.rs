@@ -275,7 +275,7 @@ fn load_layout_objects(layout_path: &Path) -> Vec<crate::models::GameObject> {
             }
             "spawn" | "StructureSpawn" => {
                 objects.push(crate::models::GameObject::Spawn {
-                    id, pos, hits, max_hits, owner, energy, max_energy, spawning: None,
+                    id, pos, hits, max_hits, owner, energy, max_energy, spawning: None, next_id: String::new(),
                 });
             }
             "tower" | "StructureTower" => {

@@ -15,11 +15,12 @@ pub struct RunExecutor {
     bot2_crashed: bool,
     debug_b1: bool,
     debug_b2: bool,
+    next_id: u32,
 }
 
 impl RunExecutor {
     pub fn new(
-        initial_state: GameState,
+        mut initial_state: GameState,
         bot1_path: &std::path::Path,
         bot2_path: Option<&std::path::Path>,
         rules: Ruleset,
@@ -33,6 +34,24 @@ impl RunExecutor {
             Some("2") | Some("bot2") | Some("all") => true,
             _ => false,
         };
+
+        let max_layout_id = initial_state.objects.iter().filter_map(|o| match o {
+            GameObject::Creep { id, .. } | GameObject::Spawn { id, .. } | GameObject::Tower { id, .. }
+            | GameObject::Extension { id, .. } | GameObject::Rampart { id, .. } | GameObject::Container { id, .. }
+            | GameObject::Road { id, .. } | GameObject::Wall { id, .. } | GameObject::Resource { id, .. }
+            | GameObject::Source { id, .. } | GameObject::ConstructionSite { id, .. } => id.parse::<u32>().ok(),
+            _ => None,
+        }).max().unwrap_or(0);
+
+        let mut next_id = max_layout_id + 1;
+
+        // Assign initial next_id to each spawn structure
+        for obj in &mut initial_state.objects {
+            if let GameObject::Spawn { next_id: nid, .. } = obj {
+                *nid = next_id.to_string();
+                next_id += 1;
+            }
+        }
 
         let (bot1_driver, bot1_crashed) = match BotDriver::load(bot1_path, "Bot 1", debug_b1) {
             Ok(d) => (Some(d), false),
@@ -63,6 +82,7 @@ impl RunExecutor {
             bot2_crashed,
             debug_b1,
             debug_b2,
+            next_id,
         })
     }
 
@@ -418,9 +438,29 @@ impl RunExecutor {
                             }
                         }
 
+                        // Find spawn's next_id for this creep, then allocate a new next_id for the spawn
+                        let mut assigned_creep_id = None;
+                        let new_allocated_id = self.next_id.to_string();
+                        self.next_id += 1;
+
+                        for obj in &mut self.state.objects {
+                            if let GameObject::Spawn { id, next_id: nid, .. } = obj {
+                                if id == spawn_id {
+                                    assigned_creep_id = Some(nid.clone());
+                                    *nid = new_allocated_id.clone();
+                                    break;
+                                }
+                            }
+                        }
+
+                        let new_creep_id = assigned_creep_id.unwrap_or_else(|| {
+                            let id = self.next_id.to_string();
+                            self.next_id += 1;
+                            id
+                        });
+
                         // Create the new creep with spawning = true (takes 3 ticks per body part, e.g. body_len * 3)
                         let need_time = (body_len.max(1) * 3);
-                        let new_creep_id = format!("creep_{}_{}", self.state.tick, act.actor_id);
                         
                         let spawn_progress = crate::models::SpawningProgress {
                             creep_id: new_creep_id.clone(),
@@ -494,8 +534,6 @@ impl RunExecutor {
     fn get_mock_creeps(&self, is_bot1: bool) -> Vec<screeps_arena::objects::Creep> {
         self.state.objects.iter().filter_map(|o| match o {
             GameObject::Creep { id, pos, hits, max_hits, owner, fatigue, spawning } => {
-                // Do not expose creeps currently in middle of spawning to player bot list if spawning is true
-                if *spawning { return None; }
                 let my = if is_bot1 { *owner == Owner::Bot1 } else { *owner == Owner::Bot2 };
                 Some(screeps_arena::objects::Creep {
                     base: screeps_arena::objects::GameObject {
@@ -507,6 +545,7 @@ impl RunExecutor {
                     hits_max: *max_hits,
                     fatigue: *fatigue as u32,
                     my,
+                    spawning: *spawning,
                 })
             }
             _ => None,
@@ -515,7 +554,7 @@ impl RunExecutor {
 
     fn get_mock_spawns(&self, is_bot1: bool) -> Vec<screeps_arena::objects::StructureSpawn> {
         self.state.objects.iter().filter_map(|o| match o {
-            GameObject::Spawn { id, pos, hits, max_hits, owner, energy, max_energy, spawning } => {
+            GameObject::Spawn { id, pos, hits, max_hits, owner, energy, max_energy, spawning, next_id } => {
                 let my = if is_bot1 { *owner == Owner::Bot1 } else { *owner == Owner::Bot2 };
                 let mock_spawning = spawning.as_ref().map(|s| screeps_arena::objects::Spawning {
                     need_time: s.need_time,
@@ -533,6 +572,7 @@ impl RunExecutor {
                     energy_max: *max_energy,
                     my: Some(my),
                     spawning: mock_spawning,
+                    next_id: next_id.clone(),
                 })
             }
             _ => None,

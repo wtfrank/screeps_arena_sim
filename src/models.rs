@@ -40,6 +40,7 @@ pub enum GameObject {
         energy: u32,
         max_energy: u32,
         spawning: Option<SpawningProgress>,
+        next_id: String,
     },
     Tower {
         id: String,
