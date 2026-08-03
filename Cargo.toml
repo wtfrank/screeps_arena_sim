@@ -13,3 +13,5 @@ mock-screeps-arena = { path = "../arena_api_mock/mock-screeps-arena" }
 sha2 = "0.10"
 fastrand = "2.0"
 libc = "0.2"
+log = "0.4"
+env_logger = "0.10"

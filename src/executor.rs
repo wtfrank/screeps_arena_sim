@@ -305,6 +305,14 @@ impl RunExecutor {
     }
 
     fn resolve_actions(&mut self, actions1: Vec<QueuedAction>, actions2: Vec<QueuedAction>) {
+        for (bot, actions) in [("Bot1", &actions1), ("Bot2", &actions2)] {
+            for act in actions {
+                log::debug!(
+                    "[Tick {}] [{}] Action: {:?}, Actor: {}, Target: {:?}, Arg1: {}, Arg2: {}",
+                    self.state.tick, bot, act.action, act.actor_id, act.target_id, act.arg1, act.arg2
+                );
+            }
+        }
         // Resolve movement intents for non-fatigued creeps
         let mut move_intents: HashMap<String, Position> = HashMap::new();
         let mut current_positions: HashMap<String, Position> = HashMap::new();

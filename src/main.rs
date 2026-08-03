@@ -209,6 +209,7 @@ fn load_state(
 }
 
 fn main() -> Result<()> {
+    env_logger::init();
     let cli = Cli::parse();
     
     let library_path = cli.library_dir
