@@ -371,6 +371,87 @@ impl RunExecutor {
             }
         }
 
+        // Resolve SpawnCreep actions
+        for (act, owner) in actions1.iter().map(|a| (a, Owner::Bot1)).chain(actions2.iter().map(|a| (a, Owner::Bot2))) {
+            if act.action == ActionId::SpawnCreep {
+                let spawn_id = &act.actor_id;
+                let body_len = act.arg1 as u32;
+                
+                // Calculate energy cost (assuming standard 100 energy per body part if default or decode from arg2)
+                let energy_cost = if body_len > 0 { body_len * 100 } else { 200 };
+
+                // Verify spawn ownership and presence
+                let mut spawn_pos = None;
+                let mut available_energy = 0;
+                for obj in &self.state.objects {
+                    match obj {
+                        GameObject::Spawn { id, owner: o, energy, pos, .. } if id == spawn_id && *o == owner => {
+                            spawn_pos = Some(*pos);
+                            available_energy += *energy;
+                        }
+                        GameObject::Extension { owner: o, energy, .. } if *o == owner => {
+                            available_energy += *energy;
+                        }
+                        _ => {}
+                    }
+                }
+
+                if let Some(pos) = spawn_pos {
+                    if available_energy >= energy_cost {
+                        let mut remaining_needed = energy_cost;
+
+                        // Deduct energy from extensions first, then spawns
+                        for obj in &mut self.state.objects {
+                            if remaining_needed == 0 { break; }
+                            match obj {
+                                GameObject::Extension { owner: o, energy, .. } if *o == owner && *energy > 0 => {
+                                    let deduct = (*energy).min(remaining_needed);
+                                    *energy -= deduct;
+                                    remaining_needed -= deduct;
+                                }
+                                GameObject::Spawn { id, owner: o, energy, .. } if id == spawn_id && *o == owner && *energy > 0 => {
+                                    let deduct = (*energy).min(remaining_needed);
+                                    *energy -= deduct;
+                                    remaining_needed -= deduct;
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // Create the new creep with spawning = true (takes 3 ticks per body part, e.g. body_len * 3)
+                        let need_time = (body_len.max(1) * 3);
+                        let new_creep_id = format!("creep_{}_{}", self.state.tick, act.actor_id);
+                        
+                        let spawn_progress = crate::models::SpawningProgress {
+                            creep_id: new_creep_id.clone(),
+                            need_time,
+                            remaining_time: need_time,
+                        };
+
+                        // Set spawning state on the spawn structure
+                        for obj in &mut self.state.objects {
+                            if let GameObject::Spawn { id, spawning, .. } = obj {
+                                if id == spawn_id {
+                                    *spawning = Some(spawn_progress.clone());
+                                }
+                            }
+                        }
+
+                        // Add new creep with spawning: true
+                        self.state.objects.push(GameObject::Creep {
+                            id: new_creep_id,
+                            pos,
+                            hits: (body_len.max(1) * 100),
+                            max_hits: (body_len.max(1) * 100),
+                            owner,
+                            fatigue: 0,
+                            spawning: true,
+                        });
+                    }
+                }
+            }
+        }
+
         // Remove destroyed units
         self.state.objects.retain(|o| match o {
             GameObject::Creep { hits, .. } => *hits > 0,
@@ -381,9 +462,29 @@ impl RunExecutor {
     }
 
     fn apply_tick_decay(&mut self) {
+        let mut completed_creep_ids = Vec::new();
+
         for obj in &mut self.state.objects {
             if let GameObject::Creep { fatigue, .. } = obj {
                 *fatigue = fatigue.saturating_sub(2);
+            }
+            if let GameObject::Spawn { spawning, .. } = obj {
+                if let Some(ref mut progress) = spawning {
+                    progress.remaining_time = progress.remaining_time.saturating_sub(1);
+                    if progress.remaining_time == 0 {
+                        completed_creep_ids.push(progress.creep_id.clone());
+                        *spawning = None;
+                    }
+                }
+            }
+        }
+
+        // Mark completed creeps as spawning = false
+        for obj in &mut self.state.objects {
+            if let GameObject::Creep { id, spawning, .. } = obj {
+                if completed_creep_ids.contains(id) {
+                    *spawning = false;
+                }
             }
         }
     }
@@ -392,7 +493,9 @@ impl RunExecutor {
 
     fn get_mock_creeps(&self, is_bot1: bool) -> Vec<screeps_arena::objects::Creep> {
         self.state.objects.iter().filter_map(|o| match o {
-            GameObject::Creep { id, pos, hits, max_hits, owner, fatigue } => {
+            GameObject::Creep { id, pos, hits, max_hits, owner, fatigue, spawning } => {
+                // Do not expose creeps currently in middle of spawning to player bot list if spawning is true
+                if *spawning { return None; }
                 let my = if is_bot1 { *owner == Owner::Bot1 } else { *owner == Owner::Bot2 };
                 Some(screeps_arena::objects::Creep {
                     base: screeps_arena::objects::GameObject {
@@ -412,8 +515,12 @@ impl RunExecutor {
 
     fn get_mock_spawns(&self, is_bot1: bool) -> Vec<screeps_arena::objects::StructureSpawn> {
         self.state.objects.iter().filter_map(|o| match o {
-            GameObject::Spawn { id, pos, hits, max_hits, owner, energy, max_energy } => {
+            GameObject::Spawn { id, pos, hits, max_hits, owner, energy, max_energy, spawning } => {
                 let my = if is_bot1 { *owner == Owner::Bot1 } else { *owner == Owner::Bot2 };
+                let mock_spawning = spawning.as_ref().map(|s| screeps_arena::objects::Spawning {
+                    need_time: s.need_time,
+                    remaining_time: s.remaining_time,
+                });
                 Some(screeps_arena::objects::StructureSpawn {
                     base: screeps_arena::objects::GameObject {
                         id: id.clone(),
@@ -425,6 +532,7 @@ impl RunExecutor {
                     energy: *energy,
                     energy_max: *max_energy,
                     my: Some(my),
+                    spawning: mock_spawning,
                 })
             }
             _ => None,

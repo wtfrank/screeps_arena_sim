@@ -270,12 +270,12 @@ fn load_layout_objects(layout_path: &Path) -> Vec<crate::models::GameObject> {
                 }
                 let fatigue = item.get("fatigue").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
                 objects.push(crate::models::GameObject::Creep {
-                    id, pos, hits, max_hits, owner, fatigue,
+                    id, pos, hits, max_hits, owner, fatigue, spawning: false,
                 });
             }
             "spawn" | "StructureSpawn" => {
                 objects.push(crate::models::GameObject::Spawn {
-                    id, pos, hits, max_hits, owner, energy, max_energy,
+                    id, pos, hits, max_hits, owner, energy, max_energy, spawning: None,
                 });
             }
             "tower" | "StructureTower" => {

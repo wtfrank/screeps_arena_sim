@@ -14,6 +14,13 @@ pub enum Owner {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpawningProgress {
+    pub creep_id: String,
+    pub need_time: u32,
+    pub remaining_time: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GameObject {
     Creep {
         id: String,
@@ -22,6 +29,7 @@ pub enum GameObject {
         max_hits: u32,
         owner: Owner,
         fatigue: u8,
+        spawning: bool,
     },
     Spawn {
         id: String,
@@ -31,6 +39,7 @@ pub enum GameObject {
         owner: Owner,
         energy: u32,
         max_energy: u32,
+        spawning: Option<SpawningProgress>,
     },
     Tower {
         id: String,
