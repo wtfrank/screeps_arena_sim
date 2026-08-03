@@ -1,12 +1,12 @@
+use anyhow::{Context, Result};
+use libloading::{Library, Symbol};
 use std::os::raw::{c_char, c_void};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use anyhow::{Context, Result};
-use libloading::{Library, Symbol};
 
-use screeps_arena::ffi::{HostInterface, ActionId, PrototypeId};
+use screeps_arena::ffi::{ActionId, HostInterface, PrototypeId};
 
 struct SendPtr(pub *mut c_void);
 unsafe impl Send for SendPtr {}
@@ -51,9 +51,7 @@ pub struct QueuedAction {
 
 /// Direct FFI callbacks routed from the bot back to the simulator host
 extern "C" fn get_ticks_callback() -> u32 {
-    CURRENT_BOT_CONTEXT.with(|ctx| {
-        ctx.borrow().as_ref().map(|c| c.tick).unwrap_or(0)
-    })
+    CURRENT_BOT_CONTEXT.with(|ctx| ctx.borrow().as_ref().map(|c| c.tick).unwrap_or(0))
 }
 
 extern "C" fn get_cpu_time_callback() -> u32 {
@@ -71,63 +69,78 @@ extern "C" fn get_objects_callback(proto: u32, out_ptr: *mut *const c_void, out_
         if let Some(ref c) = *ctx.borrow() {
             unsafe {
                 match proto {
-                    1 => { // Creep
+                    1 => {
+                        // Creep
                         *out_ptr = c.creep_cache.as_ptr() as *const c_void;
                         *out_len = c.creep_cache.len();
                     }
-                    2 => { // StructureSpawn
+                    2 => {
+                        // StructureSpawn
                         *out_ptr = c.spawn_cache.as_ptr() as *const c_void;
                         *out_len = c.spawn_cache.len();
                     }
-                    3 => { // StructureTower
+                    3 => {
+                        // StructureTower
                         *out_ptr = c.tower_cache.as_ptr() as *const c_void;
                         *out_len = c.tower_cache.len();
                     }
-                    4 => { // StructureExtension
+                    4 => {
+                        // StructureExtension
                         *out_ptr = c.extension_cache.as_ptr() as *const c_void;
                         *out_len = c.extension_cache.len();
                     }
-                    5 => { // StructureRampart
+                    5 => {
+                        // StructureRampart
                         *out_ptr = c.rampart_cache.as_ptr() as *const c_void;
                         *out_len = c.rampart_cache.len();
                     }
-                    6 => { // StructureContainer
+                    6 => {
+                        // StructureContainer
                         *out_ptr = c.container_cache.as_ptr() as *const c_void;
                         *out_len = c.container_cache.len();
                     }
-                    7 => { // StructureRoad
+                    7 => {
+                        // StructureRoad
                         *out_ptr = c.road_cache.as_ptr() as *const c_void;
                         *out_len = c.road_cache.len();
                     }
-                    8 => { // StructureWall
+                    8 => {
+                        // StructureWall
                         *out_ptr = c.wall_cache.as_ptr() as *const c_void;
                         *out_len = c.wall_cache.len();
                     }
-                    9 => { // Resource
+                    9 => {
+                        // Resource
                         *out_ptr = c.resource_cache.as_ptr() as *const c_void;
                         *out_len = c.resource_cache.len();
                     }
-                    10 => { // Source
+                    10 => {
+                        // Source
                         *out_ptr = c.source_cache.as_ptr() as *const c_void;
                         *out_len = c.source_cache.len();
                     }
-                    11 => { // Flag
+                    11 => {
+                        // Flag
                         *out_ptr = c.flag_cache.as_ptr() as *const c_void;
                         *out_len = c.flag_cache.len();
                     }
-                    12 => { // ScoreCollector
+                    12 => {
+                        // ScoreCollector
                         *out_ptr = c.score_collector_cache.as_ptr() as *const c_void;
                         *out_len = c.score_collector_cache.len();
                     }
-                    13 => { // BonusFlag
+                    13 => {
+                        // BonusFlag
                         *out_ptr = c.bonus_flag_cache.as_ptr() as *const c_void;
                         *out_len = c.bonus_flag_cache.len();
                     }
-                    14 => { // AreaEffect
+                    14 => {
+                        // AreaEffect
                         *out_ptr = c.area_effect_cache.as_ptr() as *const c_void;
                         *out_len = c.area_effect_cache.len();
                     }
-                    15 => { // ConstructionSite
+                    15 => {
+                        // ConstructionSite
                         *out_ptr = c.construction_site_cache.as_ptr() as *const c_void;
                         *out_len = c.construction_site_cache.len();
                     }
@@ -149,11 +162,17 @@ extern "C" fn queue_action_callback(
     arg2: usize,
 ) {
     unsafe {
-        let actor = std::ffi::CStr::from_ptr(actor_id).to_string_lossy().into_owned();
+        let actor = std::ffi::CStr::from_ptr(actor_id)
+            .to_string_lossy()
+            .into_owned();
         let target = if target_id.is_null() {
             None
         } else {
-            Some(std::ffi::CStr::from_ptr(target_id).to_string_lossy().into_owned())
+            Some(
+                std::ffi::CStr::from_ptr(target_id)
+                    .to_string_lossy()
+                    .into_owned(),
+            )
         };
 
         if let Some(action_enum) = ActionId::from_u32(action) {
@@ -206,10 +225,10 @@ pub enum WorkerToHostMessage {
     Initialized(Result<(), String>),
 }
 
-use std::os::unix::net::UnixStream;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
-use std::process::{Command, Stdio, Child};
-use std::io::{BufReader, BufRead, Read, Write};
+use std::os::unix::net::UnixStream;
+use std::process::{Child, Command, Stdio};
 
 pub struct BotDriver {
     child: Child,
@@ -218,8 +237,9 @@ pub struct BotDriver {
 
 impl BotDriver {
     pub fn load(path: &Path, bot_label: &str, enable_debug: bool) -> Result<Self> {
-        let (host_stream, worker_stream) = UnixStream::pair().context("Failed to create UnixSocket pair")?;
-        
+        let (host_stream, worker_stream) =
+            UnixStream::pair().context("Failed to create UnixSocket pair")?;
+
         let exe_path = std::env::current_exe().context("Failed to get current executable path")?;
         let worker_fd = worker_stream.into_raw_fd();
 
@@ -248,11 +268,14 @@ impl BotDriver {
             cmd
         };
 
-        command.stdin(Stdio::null())
+        command
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let mut child = command.spawn().context("Failed to spawn bot-runner worker process")?;
+        let mut child = command
+            .spawn()
+            .context("Failed to spawn bot-runner worker process")?;
 
         // Read stdout and stderr asynchronously in background threads with log prefixing
         if let Some(stdout) = child.stdout.take() {
@@ -278,7 +301,9 @@ impl BotDriver {
         if enable_debug {
             // Give gdbserver a brief moment to print "Listening on port..."
             thread::sleep(Duration::from_millis(50));
-            println!("\ngdb -ex \"target remote :12345\" -ex \"break wtfbot::Bot::tick\" -ex \"continue\"");
+            println!(
+                "\ngdb -ex \"target remote :12345\" -ex \"break wtfbot::Bot::tick\" -ex \"continue\""
+            );
         }
 
         // Wait for initialization acknowledgment from worker with child process crash monitoring
@@ -288,10 +313,15 @@ impl BotDriver {
                 Ok(msg) => break msg,
                 Err(e) => {
                     if let Ok(Some(status)) = child.try_wait() {
-                        return Err(anyhow::anyhow!("Bot worker process exited unexpectedly during init with status: {}", status));
+                        return Err(anyhow::anyhow!(
+                            "Bot worker process exited unexpectedly during init with status: {}",
+                            status
+                        ));
                     }
                     if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
-                        if io_err.kind() == std::io::ErrorKind::WouldBlock || io_err.kind() == std::io::ErrorKind::TimedOut {
+                        if io_err.kind() == std::io::ErrorKind::WouldBlock
+                            || io_err.kind() == std::io::ErrorKind::TimedOut
+                        {
                             continue;
                         }
                     }
@@ -300,7 +330,7 @@ impl BotDriver {
             }
         };
         match init_msg {
-            WorkerToHostMessage::Initialized(Ok(())) => {},
+            WorkerToHostMessage::Initialized(Ok(())) => {}
             WorkerToHostMessage::Initialized(Err(err)) => {
                 let _ = child.kill();
                 return Err(anyhow::anyhow!("Bot initialization error: {}", err));
@@ -317,28 +347,33 @@ impl BotDriver {
         })
     }
 
-    pub fn tick(
-        &mut self,
-        msg: BotTickMessage,
-        timeout: Duration,
-    ) -> Result<Vec<QueuedAction>> {
+    pub fn tick(&mut self, msg: BotTickMessage, timeout: Duration) -> Result<Vec<QueuedAction>> {
         bincode_write(&self.stream, &HostToWorkerMessage::Tick(msg))?;
 
         let start = std::time::Instant::now();
         let response = loop {
-            self.stream.set_read_timeout(Some(Duration::from_millis(100)))?;
+            self.stream
+                .set_read_timeout(Some(Duration::from_millis(100)))?;
             match bincode_read::<WorkerToHostMessage, _>(&self.stream) {
                 Ok(res) => break res,
                 Err(e) => {
                     if let Ok(Some(status)) = self.child.try_wait() {
-                        return Err(anyhow::anyhow!("Worker process exited with status: {}", status));
+                        return Err(anyhow::anyhow!(
+                            "Worker process exited with status: {}",
+                            status
+                        ));
                     }
                     if start.elapsed() > timeout {
                         let _ = self.child.kill();
-                        return Err(anyhow::anyhow!("Worker process timeout after {:?}", timeout));
+                        return Err(anyhow::anyhow!(
+                            "Worker process timeout after {:?}",
+                            timeout
+                        ));
                     }
                     if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
-                        if io_err.kind() == std::io::ErrorKind::WouldBlock || io_err.kind() == std::io::ErrorKind::TimedOut {
+                        if io_err.kind() == std::io::ErrorKind::WouldBlock
+                            || io_err.kind() == std::io::ErrorKind::TimedOut
+                        {
                             continue;
                         }
                     }
@@ -350,7 +385,9 @@ impl BotDriver {
 
         match response {
             WorkerToHostMessage::TickResult(Ok(actions)) => Ok(actions),
-            WorkerToHostMessage::TickResult(Err(err_msg)) => Err(anyhow::anyhow!("Bot panic: {}", err_msg)),
+            WorkerToHostMessage::TickResult(Err(err_msg)) => {
+                Err(anyhow::anyhow!("Bot panic: {}", err_msg))
+            }
             _ => Err(anyhow::anyhow!("Invalid response from worker process")),
         }
     }
@@ -390,14 +427,15 @@ pub fn run_bot_runner_process(bot_path: &str, socket_fd: i32, pause: bool) -> Re
     let lib = unsafe { Library::new(bot_path).context("Failed to load bot library in worker")? };
 
     let set_host_interface_fn: Symbol<unsafe extern "C" fn(HostInterface)> = unsafe {
-        lib.get(b"set_host_interface").context("Failed to bind set_host_interface")?
+        lib.get(b"set_host_interface")
+            .context("Failed to bind set_host_interface")?
     };
     let bot_initialize_fn: Symbol<unsafe extern "C" fn() -> *mut c_void> = unsafe {
-        lib.get(b"bot_initialize").context("Failed to bind bot_initialize")?
+        lib.get(b"bot_initialize")
+            .context("Failed to bind bot_initialize")?
     };
-    let bot_tick_fn: Symbol<unsafe extern "C" fn(*mut c_void)> = unsafe {
-        lib.get(b"bot_tick").context("Failed to bind bot_tick")?
-    };
+    let bot_tick_fn: Symbol<unsafe extern "C" fn(*mut c_void)> =
+        unsafe { lib.get(b"bot_tick").context("Failed to bind bot_tick")? };
 
     let interface = HostInterface {
         get_ticks: get_ticks_callback,
@@ -421,7 +459,10 @@ pub fn run_bot_runner_process(bot_path: &str, socket_fd: i32, pause: bool) -> Re
             ptr
         }
         Ok(_) => {
-            bincode_write(&stream, &WorkerToHostMessage::Initialized(Err("bot_initialize returned null".to_string())))?;
+            bincode_write(
+                &stream,
+                &WorkerToHostMessage::Initialized(Err("bot_initialize returned null".to_string())),
+            )?;
             return Ok(());
         }
         Err(err) => {

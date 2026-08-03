@@ -1,9 +1,9 @@
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::time::Duration;
-use anyhow::{Context, Result};
 
-use crate::models::{GameObject, Position, Owner, Terrain, GameState, Ruleset, WinCondition};
 use crate::driver::{BotDriver, QueuedAction};
+use crate::models::{GameObject, GameState, Owner, Position, Ruleset, Terrain, WinCondition};
 use screeps_arena::ffi::ActionId;
 
 pub struct RunExecutor {
@@ -35,13 +35,25 @@ impl RunExecutor {
             _ => false,
         };
 
-        let max_layout_id = initial_state.objects.iter().filter_map(|o| match o {
-            GameObject::Creep { id, .. } | GameObject::Spawn { id, .. } | GameObject::Tower { id, .. }
-            | GameObject::Extension { id, .. } | GameObject::Rampart { id, .. } | GameObject::Container { id, .. }
-            | GameObject::Road { id, .. } | GameObject::Wall { id, .. } | GameObject::Resource { id, .. }
-            | GameObject::Source { id, .. } | GameObject::ConstructionSite { id, .. } => id.parse::<u32>().ok(),
-            _ => None,
-        }).max().unwrap_or(0);
+        let max_layout_id = initial_state
+            .objects
+            .iter()
+            .filter_map(|o| match o {
+                GameObject::Creep { id, .. }
+                | GameObject::Spawn { id, .. }
+                | GameObject::Tower { id, .. }
+                | GameObject::Extension { id, .. }
+                | GameObject::Rampart { id, .. }
+                | GameObject::Container { id, .. }
+                | GameObject::Road { id, .. }
+                | GameObject::Wall { id, .. }
+                | GameObject::Resource { id, .. }
+                | GameObject::Source { id, .. }
+                | GameObject::ConstructionSite { id, .. } => id.parse::<u32>().ok(),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
 
         let mut next_id = max_layout_id + 1;
 
@@ -138,8 +150,16 @@ impl RunExecutor {
         let bot2_construction_sites = self.get_mock_construction_sites(false);
 
         // 2. Run active (non-crashed) bots in parallel threads
-        let timeout_b1 = if self.debug_b1 { Duration::from_secs(3600) } else { Duration::from_millis(self.rules.cpu_time_limit as u64) };
-        let timeout_b2 = if self.debug_b2 { Duration::from_secs(3600) } else { Duration::from_millis(self.rules.cpu_time_limit as u64) };
+        let timeout_b1 = if self.debug_b1 {
+            Duration::from_secs(3600)
+        } else {
+            Duration::from_millis(self.rules.cpu_time_limit as u64)
+        };
+        let timeout_b2 = if self.debug_b2 {
+            Duration::from_secs(3600)
+        } else {
+            Duration::from_millis(self.rules.cpu_time_limit as u64)
+        };
         let tick = self.state.tick;
 
         let (res1, res2) = thread_run_parallel(
@@ -202,7 +222,7 @@ impl RunExecutor {
                 } else {
                     Ok(Vec::new())
                 }
-            }
+            },
         );
 
         let actions1 = match res1 {
@@ -249,52 +269,78 @@ impl RunExecutor {
 
     fn check_win_condition(&self, limit_reached: bool) -> SimulationResult {
         let bot1_spawn_exists = self.state.objects.iter().any(|o| match o {
-            GameObject::Spawn { owner: Owner::Bot1, .. } => true,
+            GameObject::Spawn {
+                owner: Owner::Bot1, ..
+            } => true,
             _ => false,
         });
         let bot2_spawn_exists = self.state.objects.iter().any(|o| match o {
-            GameObject::Spawn { owner: Owner::Bot2, .. } => true,
+            GameObject::Spawn {
+                owner: Owner::Bot2, ..
+            } => true,
             _ => false,
         });
 
         match self.rules.win_condition {
             WinCondition::DestroyEnemySpawn => {
                 if bot1_spawn_exists && !bot2_spawn_exists {
-                    SimulationResult::Bot1Win { reason: "Enemy spawn destroyed".to_string() }
+                    SimulationResult::Bot1Win {
+                        reason: "Enemy spawn destroyed".to_string(),
+                    }
                 } else if !bot1_spawn_exists && bot2_spawn_exists {
-                    SimulationResult::Bot2Win { reason: "Spawn destroyed".to_string() }
+                    SimulationResult::Bot2Win {
+                        reason: "Spawn destroyed".to_string(),
+                    }
                 } else if limit_reached {
-                    SimulationResult::Draw { reason: "Tick limit reached".to_string() }
+                    SimulationResult::Draw {
+                        reason: "Tick limit reached".to_string(),
+                    }
                 } else if self.bot1_crashed && self.bot2_crashed {
-                    SimulationResult::Draw { reason: "Both bots crashed".to_string() }
+                    SimulationResult::Draw {
+                        reason: "Both bots crashed".to_string(),
+                    }
                 } else {
-                    SimulationResult::Draw { reason: "Both spawns destroyed simultaneously".to_string() }
+                    SimulationResult::Draw {
+                        reason: "Both spawns destroyed simultaneously".to_string(),
+                    }
                 }
             }
             WinCondition::Survival => {
                 if limit_reached {
-                    SimulationResult::Draw { reason: "Tick limit reached".to_string() }
+                    SimulationResult::Draw {
+                        reason: "Tick limit reached".to_string(),
+                    }
                 } else if !bot1_spawn_exists && !bot2_spawn_exists {
-                    SimulationResult::Draw { reason: "No survivors".to_string() }
+                    SimulationResult::Draw {
+                        reason: "No survivors".to_string(),
+                    }
                 } else if bot1_spawn_exists {
-                    SimulationResult::Bot1Win { reason: "Survived".to_string() }
+                    SimulationResult::Bot1Win {
+                        reason: "Survived".to_string(),
+                    }
                 } else {
-                    SimulationResult::Bot2Win { reason: "Survived".to_string() }
+                    SimulationResult::Bot2Win {
+                        reason: "Survived".to_string(),
+                    }
                 }
             }
-            WinCondition::HighestScore => {
-                SimulationResult::Draw { reason: "Score conditions unresolved".to_string() }
-            }
+            WinCondition::HighestScore => SimulationResult::Draw {
+                reason: "Score conditions unresolved".to_string(),
+            },
         }
     }
 
     fn check_win_conditions_active(&self) -> Option<SimulationResult> {
         let bot1_spawn_exists = self.state.objects.iter().any(|o| match o {
-            GameObject::Spawn { owner: Owner::Bot1, .. } => true,
+            GameObject::Spawn {
+                owner: Owner::Bot1, ..
+            } => true,
             _ => false,
         });
         let bot2_spawn_exists = self.state.objects.iter().any(|o| match o {
-            GameObject::Spawn { owner: Owner::Bot2, .. } => true,
+            GameObject::Spawn {
+                owner: Owner::Bot2, ..
+            } => true,
             _ => false,
         });
 
@@ -309,7 +355,13 @@ impl RunExecutor {
             for act in actions {
                 log::debug!(
                     "[Tick {}] [{}] Action: {:?}, Actor: {}, Target: {:?}, Arg1: {}, Arg2: {}",
-                    self.state.tick, bot, act.action, act.actor_id, act.target_id, act.arg1, act.arg2
+                    self.state.tick,
+                    bot,
+                    act.action,
+                    act.actor_id,
+                    act.target_id,
+                    act.arg1,
+                    act.arg2
                 );
             }
         }
@@ -318,27 +370,58 @@ impl RunExecutor {
         let mut current_positions: HashMap<String, Position> = HashMap::new();
 
         for obj in &self.state.objects {
-            if let GameObject::Creep { id, pos, fatigue, spawning, .. } = obj {
+            if let GameObject::Creep {
+                id,
+                pos,
+                fatigue,
+                spawning,
+                ..
+            } = obj
+            {
                 if *fatigue == 0 && !*spawning {
                     current_positions.insert(id.clone(), *pos);
                 }
             }
         }
 
-        for act in actions1.iter().chain(actions2.iter()).filter(|a| a.action == ActionId::Move) {
+        for act in actions1
+            .iter()
+            .chain(actions2.iter())
+            .filter(|a| a.action == ActionId::Move)
+        {
             let id = &act.actor_id;
             if let Some(&curr_pos) = current_positions.get(id) {
                 let dir = act.arg1 as u8;
                 let mut target_pos = curr_pos;
                 match dir {
-                    1 => { target_pos.y = target_pos.y.saturating_sub(1); } // Top
-                    2 => { target_pos.x = target_pos.x.saturating_add(1); target_pos.y = target_pos.y.saturating_sub(1); } // TopRight
-                    3 => { target_pos.x = target_pos.x.saturating_add(1); } // Right
-                    4 => { target_pos.x = target_pos.x.saturating_add(1); target_pos.y = target_pos.y.saturating_add(1); } // BottomRight
-                    5 => { target_pos.y = target_pos.y.saturating_add(1); } // Bottom
-                    6 => { target_pos.x = target_pos.x.saturating_sub(1); target_pos.y = target_pos.y.saturating_add(1); } // BottomLeft
-                    7 => { target_pos.x = target_pos.x.saturating_sub(1); } // Left
-                    8 => { target_pos.x = target_pos.x.saturating_sub(1); target_pos.y = target_pos.y.saturating_sub(1); } // TopLeft
+                    1 => {
+                        target_pos.y = target_pos.y.saturating_sub(1);
+                    } // Top
+                    2 => {
+                        target_pos.x = target_pos.x.saturating_add(1);
+                        target_pos.y = target_pos.y.saturating_sub(1);
+                    } // TopRight
+                    3 => {
+                        target_pos.x = target_pos.x.saturating_add(1);
+                    } // Right
+                    4 => {
+                        target_pos.x = target_pos.x.saturating_add(1);
+                        target_pos.y = target_pos.y.saturating_add(1);
+                    } // BottomRight
+                    5 => {
+                        target_pos.y = target_pos.y.saturating_add(1);
+                    } // Bottom
+                    6 => {
+                        target_pos.x = target_pos.x.saturating_sub(1);
+                        target_pos.y = target_pos.y.saturating_add(1);
+                    } // BottomLeft
+                    7 => {
+                        target_pos.x = target_pos.x.saturating_sub(1);
+                    } // Left
+                    8 => {
+                        target_pos.x = target_pos.x.saturating_sub(1);
+                        target_pos.y = target_pos.y.saturating_sub(1);
+                    } // TopLeft
                     _ => {}
                 }
 
@@ -353,7 +436,8 @@ impl RunExecutor {
         }
 
         // Collect static obstacles: non-moving creeps, spawns, towers, extensions, ramparts, constructed walls
-        let mut blocked_tiles: std::collections::HashSet<Position> = std::collections::HashSet::new();
+        let mut blocked_tiles: std::collections::HashSet<Position> =
+            std::collections::HashSet::new();
 
         for obj in &self.state.objects {
             match obj {
@@ -447,20 +531,41 @@ impl RunExecutor {
 
         // Apply approved moves and calculate fatigue according to Screeps rules
         for obj in &mut self.state.objects {
-            if let GameObject::Creep { id, pos, fatigue, body, store, .. } = obj {
+            if let GameObject::Creep {
+                id,
+                pos,
+                fatigue,
+                body,
+                store,
+                ..
+            } = obj
+            {
                 if let Some(&new_pos) = approved_moves.get(id) {
                     *pos = new_pos;
-                    let move_parts = body.iter().filter(|&&p| p == screeps_arena::constants::Part::Move).count() as u32;
-                    let carry_parts = body.iter().filter(|&&p| p == screeps_arena::constants::Part::Carry).count() as u32;
+                    let move_parts = body
+                        .iter()
+                        .filter(|&&p| p == screeps_arena::constants::Part::Move)
+                        .count() as u32;
+                    let carry_parts = body
+                        .iter()
+                        .filter(|&&p| p == screeps_arena::constants::Part::Carry)
+                        .count() as u32;
                     let store_used: u32 = store.values().sum();
                     let active_carries = (store_used.div_ceil(50)).min(carry_parts);
 
-                    let non_carry_non_move_weight = body.iter().filter(|&&p| p != screeps_arena::constants::Part::Move && p != screeps_arena::constants::Part::Carry).count() as u32;
+                    let non_carry_non_move_weight = body
+                        .iter()
+                        .filter(|&&p| {
+                            p != screeps_arena::constants::Part::Move
+                                && p != screeps_arena::constants::Part::Carry
+                        })
+                        .count() as u32;
                     let total_weight = non_carry_non_move_weight + active_carries;
 
                     let terrain = self.state.terrain[new_pos.x as usize][new_pos.y as usize];
                     let terrain_cost = if terrain == Terrain::Swamp { 10 } else { 2 };
-                    let added_fatigue = (total_weight * terrain_cost).saturating_sub(move_parts * 2);
+                    let added_fatigue =
+                        (total_weight * terrain_cost).saturating_sub(move_parts * 2);
 
                     *fatigue = (*fatigue as u32 + added_fatigue).min(255) as u8;
                 }
@@ -500,11 +605,15 @@ impl RunExecutor {
         }
 
         // Resolve SpawnCreep actions
-        for (act, owner) in actions1.iter().map(|a| (a, Owner::Bot1)).chain(actions2.iter().map(|a| (a, Owner::Bot2))) {
+        for (act, owner) in actions1
+            .iter()
+            .map(|a| (a, Owner::Bot1))
+            .chain(actions2.iter().map(|a| (a, Owner::Bot2)))
+        {
             if act.action == ActionId::SpawnCreep {
                 let spawn_id = &act.actor_id;
                 let body_len = act.arg1 as u32;
-                
+
                 // Calculate energy cost (assuming standard 100 energy per body part if default or decode from arg2)
                 let energy_cost = if body_len > 0 { body_len * 100 } else { 200 };
 
@@ -514,7 +623,10 @@ impl RunExecutor {
                 let range = screeps_arena::constants::SPAWN_RANGE as u8;
 
                 for obj in &self.state.objects {
-                    if let GameObject::Spawn { id, owner: o, pos, .. } = obj {
+                    if let GameObject::Spawn {
+                        id, owner: o, pos, ..
+                    } = obj
+                    {
                         if id == spawn_id && *o == owner {
                             spawn_pos = Some(*pos);
                             break;
@@ -525,12 +637,26 @@ impl RunExecutor {
                 if let Some(spos) = spawn_pos {
                     for obj in &self.state.objects {
                         match obj {
-                            GameObject::Spawn { owner: o, energy, pos, .. }
-                                if *o == owner && pos.x.abs_diff(spos.x) <= range && pos.y.abs_diff(spos.y) <= range => {
+                            GameObject::Spawn {
+                                owner: o,
+                                energy,
+                                pos,
+                                ..
+                            } if *o == owner
+                                && pos.x.abs_diff(spos.x) <= range
+                                && pos.y.abs_diff(spos.y) <= range =>
+                            {
                                 available_energy += *energy;
                             }
-                            GameObject::Extension { owner: o, energy, pos, .. }
-                                if *o == owner && pos.x.abs_diff(spos.x) <= range && pos.y.abs_diff(spos.y) <= range => {
+                            GameObject::Extension {
+                                owner: o,
+                                energy,
+                                pos,
+                                ..
+                            } if *o == owner
+                                && pos.x.abs_diff(spos.x) <= range
+                                && pos.y.abs_diff(spos.y) <= range =>
+                            {
                                 available_energy += *energy;
                             }
                             _ => {}
@@ -542,16 +668,34 @@ impl RunExecutor {
 
                         // Deduct energy from extensions first, then spawns (within SPAWN_RANGE)
                         for obj in &mut self.state.objects {
-                            if remaining_needed == 0 { break; }
+                            if remaining_needed == 0 {
+                                break;
+                            }
                             match obj {
-                                GameObject::Extension { owner: o, energy, pos, .. }
-                                    if *o == owner && *energy > 0 && pos.x.abs_diff(spos.x) <= range && pos.y.abs_diff(spos.y) <= range => {
+                                GameObject::Extension {
+                                    owner: o,
+                                    energy,
+                                    pos,
+                                    ..
+                                } if *o == owner
+                                    && *energy > 0
+                                    && pos.x.abs_diff(spos.x) <= range
+                                    && pos.y.abs_diff(spos.y) <= range =>
+                                {
                                     let deduct = (*energy).min(remaining_needed);
                                     *energy -= deduct;
                                     remaining_needed -= deduct;
                                 }
-                                GameObject::Spawn { owner: o, energy, pos, .. }
-                                    if *o == owner && *energy > 0 && pos.x.abs_diff(spos.x) <= range && pos.y.abs_diff(spos.y) <= range => {
+                                GameObject::Spawn {
+                                    owner: o,
+                                    energy,
+                                    pos,
+                                    ..
+                                } if *o == owner
+                                    && *energy > 0
+                                    && pos.x.abs_diff(spos.x) <= range
+                                    && pos.y.abs_diff(spos.y) <= range =>
+                                {
                                     let deduct = (*energy).min(remaining_needed);
                                     *energy -= deduct;
                                     remaining_needed -= deduct;
@@ -566,7 +710,10 @@ impl RunExecutor {
                         self.next_id += 1;
 
                         for obj in &mut self.state.objects {
-                            if let GameObject::Spawn { id, next_id: nid, .. } = obj {
+                            if let GameObject::Spawn {
+                                id, next_id: nid, ..
+                            } = obj
+                            {
                                 if id == spawn_id {
                                     assigned_creep_id = Some(nid.clone());
                                     *nid = new_allocated_id.clone();
@@ -583,7 +730,7 @@ impl RunExecutor {
 
                         // Create the new creep with spawning = true (takes 3 ticks per body part, e.g. body_len * 3)
                         let need_time = (body_len.max(1) * 3);
-                        
+
                         let spawn_progress = crate::models::SpawningProgress {
                             creep_id: new_creep_id.clone(),
                             need_time,
@@ -630,7 +777,10 @@ impl RunExecutor {
 
         for obj in &mut self.state.objects {
             if let GameObject::Creep { fatigue, body, .. } = obj {
-                let move_parts = body.iter().filter(|&&p| p == screeps_arena::constants::Part::Move).count() as u8;
+                let move_parts = body
+                    .iter()
+                    .filter(|&&p| p == screeps_arena::constants::Part::Move)
+                    .count() as u8;
                 let decay = if move_parts > 0 { move_parts * 2 } else { 2 };
                 *fatigue = fatigue.saturating_sub(decay);
             }
@@ -658,118 +808,212 @@ impl RunExecutor {
     // Helper functions to construct mock_screeps_arena structures with proper `my()` logic:
 
     fn get_mock_creeps(&self, is_bot1: bool) -> Vec<screeps_arena::objects::Creep> {
-        self.state.objects.iter().filter_map(|o| match o {
-            GameObject::Creep { id, pos, hits, max_hits, owner, fatigue, spawning, .. } => {
-                let my = if is_bot1 { *owner == Owner::Bot1 } else { *owner == Owner::Bot2 };
-                Some(screeps_arena::objects::Creep {
-                    base: screeps_arena::objects::GameObject {
-                        id: id.clone(),
-                        x: pos.x,
-                        y: pos.y,
-                    },
-                    hits: *hits,
-                    hits_max: *max_hits,
-                    fatigue: *fatigue as u32,
-                    my,
-                    spawning: *spawning,
-                })
-            }
-            _ => None,
-        }).collect()
+        self.state
+            .objects
+            .iter()
+            .filter_map(|o| match o {
+                GameObject::Creep {
+                    id,
+                    pos,
+                    hits,
+                    max_hits,
+                    owner,
+                    fatigue,
+                    spawning,
+                    ..
+                } => {
+                    let my = if is_bot1 {
+                        *owner == Owner::Bot1
+                    } else {
+                        *owner == Owner::Bot2
+                    };
+                    Some(screeps_arena::objects::Creep {
+                        base: screeps_arena::objects::GameObject {
+                            id: id.clone(),
+                            x: pos.x,
+                            y: pos.y,
+                        },
+                        hits: *hits,
+                        hits_max: *max_hits,
+                        fatigue: *fatigue as u32,
+                        my,
+                        spawning: *spawning,
+                    })
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     fn get_mock_spawns(&self, is_bot1: bool) -> Vec<screeps_arena::objects::StructureSpawn> {
-        self.state.objects.iter().filter_map(|o| match o {
-            GameObject::Spawn { id, pos, hits, max_hits, owner, energy, max_energy, spawning, next_id } => {
-                let my = if is_bot1 { *owner == Owner::Bot1 } else { *owner == Owner::Bot2 };
-                let mock_spawning = spawning.as_ref().map(|s| screeps_arena::objects::Spawning {
-                    need_time: s.need_time,
-                    remaining_time: s.remaining_time,
-                });
-                Some(screeps_arena::objects::StructureSpawn {
-                    base: screeps_arena::objects::GameObject {
-                        id: id.clone(),
-                        x: pos.x,
-                        y: pos.y,
-                    },
-                    hits: *hits,
-                    hits_max: *max_hits,
-                    energy: *energy,
-                    energy_max: *max_energy,
-                    my: Some(my),
-                    spawning: mock_spawning,
-                    next_id: next_id.clone(),
-                })
-            }
-            _ => None,
-        }).collect()
+        self.state
+            .objects
+            .iter()
+            .filter_map(|o| match o {
+                GameObject::Spawn {
+                    id,
+                    pos,
+                    hits,
+                    max_hits,
+                    owner,
+                    energy,
+                    max_energy,
+                    spawning,
+                    next_id,
+                } => {
+                    let my = if is_bot1 {
+                        *owner == Owner::Bot1
+                    } else {
+                        *owner == Owner::Bot2
+                    };
+                    let mock_spawning =
+                        spawning.as_ref().map(|s| screeps_arena::objects::Spawning {
+                            need_time: s.need_time,
+                            remaining_time: s.remaining_time,
+                        });
+                    Some(screeps_arena::objects::StructureSpawn {
+                        base: screeps_arena::objects::GameObject {
+                            id: id.clone(),
+                            x: pos.x,
+                            y: pos.y,
+                        },
+                        hits: *hits,
+                        hits_max: *max_hits,
+                        energy: *energy,
+                        energy_max: *max_energy,
+                        my: Some(my),
+                        spawning: mock_spawning,
+                        next_id: next_id.clone(),
+                    })
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     fn get_mock_towers(&self, is_bot1: bool) -> Vec<screeps_arena::objects::StructureTower> {
-        self.state.objects.iter().filter_map(|o| match o {
-            GameObject::Tower { id, pos, hits, max_hits, owner, energy, max_energy } => {
-                let my = if is_bot1 { *owner == Owner::Bot1 } else { *owner == Owner::Bot2 };
-                Some(screeps_arena::objects::StructureTower {
-                    base: screeps_arena::objects::GameObject {
-                        id: id.clone(),
-                        x: pos.x,
-                        y: pos.y,
-                    },
-                    hits: *hits,
-                    hits_max: *max_hits,
-                    energy: *energy,
-                    energy_max: *max_energy,
-                    my: Some(my),
-                })
-            }
-            _ => None,
-        }).collect()
+        self.state
+            .objects
+            .iter()
+            .filter_map(|o| match o {
+                GameObject::Tower {
+                    id,
+                    pos,
+                    hits,
+                    max_hits,
+                    owner,
+                    energy,
+                    max_energy,
+                } => {
+                    let my = if is_bot1 {
+                        *owner == Owner::Bot1
+                    } else {
+                        *owner == Owner::Bot2
+                    };
+                    Some(screeps_arena::objects::StructureTower {
+                        base: screeps_arena::objects::GameObject {
+                            id: id.clone(),
+                            x: pos.x,
+                            y: pos.y,
+                        },
+                        hits: *hits,
+                        hits_max: *max_hits,
+                        energy: *energy,
+                        energy_max: *max_energy,
+                        my: Some(my),
+                    })
+                }
+                _ => None,
+            })
+            .collect()
     }
 
-    fn get_mock_extensions(&self, is_bot1: bool) -> Vec<screeps_arena::objects::StructureExtension> {
-        self.state.objects.iter().filter_map(|o| match o {
-            GameObject::Extension { id, pos, hits, max_hits, owner, energy, max_energy } => {
-                let my = if is_bot1 { *owner == Owner::Bot1 } else { *owner == Owner::Bot2 };
-                Some(screeps_arena::objects::StructureExtension {
-                    base: screeps_arena::objects::GameObject {
-                        id: id.clone(),
-                        x: pos.x,
-                        y: pos.y,
-                    },
-                    hits: *hits,
-                    hits_max: *max_hits,
-                    energy: *energy,
-                    energy_max: *max_energy,
-                    my: Some(my),
-                })
-            }
-            _ => None,
-        }).collect()
+    fn get_mock_extensions(
+        &self,
+        is_bot1: bool,
+    ) -> Vec<screeps_arena::objects::StructureExtension> {
+        self.state
+            .objects
+            .iter()
+            .filter_map(|o| match o {
+                GameObject::Extension {
+                    id,
+                    pos,
+                    hits,
+                    max_hits,
+                    owner,
+                    energy,
+                    max_energy,
+                } => {
+                    let my = if is_bot1 {
+                        *owner == Owner::Bot1
+                    } else {
+                        *owner == Owner::Bot2
+                    };
+                    Some(screeps_arena::objects::StructureExtension {
+                        base: screeps_arena::objects::GameObject {
+                            id: id.clone(),
+                            x: pos.x,
+                            y: pos.y,
+                        },
+                        hits: *hits,
+                        hits_max: *max_hits,
+                        energy: *energy,
+                        energy_max: *max_energy,
+                        my: Some(my),
+                    })
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     fn get_mock_ramparts(&self, is_bot1: bool) -> Vec<screeps_arena::objects::StructureRampart> {
-        self.state.objects.iter().filter_map(|o| match o {
-            GameObject::Rampart { id, pos, hits, max_hits, owner } => {
-                let my = if is_bot1 { *owner == Owner::Bot1 } else { *owner == Owner::Bot2 };
-                Some(screeps_arena::objects::StructureRampart {
-                    base: screeps_arena::objects::GameObject {
-                        id: id.clone(),
-                        x: pos.x,
-                        y: pos.y,
-                    },
-                    hits: *hits,
-                    hits_max: *max_hits,
-                    my: Some(my),
-                })
-            }
-            _ => None,
-        }).collect()
+        self.state
+            .objects
+            .iter()
+            .filter_map(|o| match o {
+                GameObject::Rampart {
+                    id,
+                    pos,
+                    hits,
+                    max_hits,
+                    owner,
+                } => {
+                    let my = if is_bot1 {
+                        *owner == Owner::Bot1
+                    } else {
+                        *owner == Owner::Bot2
+                    };
+                    Some(screeps_arena::objects::StructureRampart {
+                        base: screeps_arena::objects::GameObject {
+                            id: id.clone(),
+                            x: pos.x,
+                            y: pos.y,
+                        },
+                        hits: *hits,
+                        hits_max: *max_hits,
+                        my: Some(my),
+                    })
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     fn get_mock_containers(&self) -> Vec<screeps_arena::objects::StructureContainer> {
-        self.state.objects.iter().filter_map(|o| match o {
-            GameObject::Container { id, pos, hits, max_hits, energy, max_energy } => {
-                Some(screeps_arena::objects::StructureContainer {
+        self.state
+            .objects
+            .iter()
+            .filter_map(|o| match o {
+                GameObject::Container {
+                    id,
+                    pos,
+                    hits,
+                    max_hits,
+                    energy,
+                    max_energy,
+                } => Some(screeps_arena::objects::StructureContainer {
                     base: screeps_arena::objects::GameObject {
                         id: id.clone(),
                         x: pos.x,
@@ -779,16 +1023,23 @@ impl RunExecutor {
                     hits_max: *max_hits,
                     store: *energy,
                     store_max: *max_energy,
-                })
-            }
-            _ => None,
-        }).collect()
+                }),
+                _ => None,
+            })
+            .collect()
     }
 
     fn get_mock_roads(&self) -> Vec<screeps_arena::objects::StructureRoad> {
-        self.state.objects.iter().filter_map(|o| match o {
-            GameObject::Road { id, pos, hits, max_hits } => {
-                Some(screeps_arena::objects::StructureRoad {
+        self.state
+            .objects
+            .iter()
+            .filter_map(|o| match o {
+                GameObject::Road {
+                    id,
+                    pos,
+                    hits,
+                    max_hits,
+                } => Some(screeps_arena::objects::StructureRoad {
                     base: screeps_arena::objects::GameObject {
                         id: id.clone(),
                         x: pos.x,
@@ -796,16 +1047,23 @@ impl RunExecutor {
                     },
                     hits: *hits,
                     hits_max: *max_hits,
-                })
-            }
-            _ => None,
-        }).collect()
+                }),
+                _ => None,
+            })
+            .collect()
     }
 
     fn get_mock_walls(&self) -> Vec<screeps_arena::objects::StructureWall> {
-        self.state.objects.iter().filter_map(|o| match o {
-            GameObject::Wall { id, pos, hits, max_hits } => {
-                Some(screeps_arena::objects::StructureWall {
+        self.state
+            .objects
+            .iter()
+            .filter_map(|o| match o {
+                GameObject::Wall {
+                    id,
+                    pos,
+                    hits,
+                    max_hits,
+                } => Some(screeps_arena::objects::StructureWall {
                     base: screeps_arena::objects::GameObject {
                         id: id.clone(),
                         x: pos.x,
@@ -813,16 +1071,23 @@ impl RunExecutor {
                     },
                     hits: *hits,
                     hits_max: *max_hits,
-                })
-            }
-            _ => None,
-        }).collect()
+                }),
+                _ => None,
+            })
+            .collect()
     }
 
     fn get_mock_resources(&self) -> Vec<screeps_arena::objects::Resource> {
-        self.state.objects.iter().filter_map(|o| match o {
-            GameObject::Resource { id, pos, amount, resource_type } => {
-                Some(screeps_arena::objects::Resource {
+        self.state
+            .objects
+            .iter()
+            .filter_map(|o| match o {
+                GameObject::Resource {
+                    id,
+                    pos,
+                    amount,
+                    resource_type,
+                } => Some(screeps_arena::objects::Resource {
                     base: screeps_arena::objects::GameObject {
                         id: id.clone(),
                         x: pos.x,
@@ -830,16 +1095,23 @@ impl RunExecutor {
                     },
                     amount: *amount,
                     resource_type: resource_type.clone(),
-                })
-            }
-            _ => None,
-        }).collect()
+                }),
+                _ => None,
+            })
+            .collect()
     }
 
     fn get_mock_sources(&self) -> Vec<screeps_arena::objects::Source> {
-        self.state.objects.iter().filter_map(|o| match o {
-            GameObject::Source { id, pos, energy, max_energy } => {
-                Some(screeps_arena::objects::Source {
+        self.state
+            .objects
+            .iter()
+            .filter_map(|o| match o {
+                GameObject::Source {
+                    id,
+                    pos,
+                    energy,
+                    max_energy,
+                } => Some(screeps_arena::objects::Source {
                     base: screeps_arena::objects::GameObject {
                         id: id.clone(),
                         x: pos.x,
@@ -847,96 +1119,146 @@ impl RunExecutor {
                     },
                     energy: *energy,
                     energy_max: *max_energy,
-                })
-            }
-            _ => None,
-        }).collect()
+                }),
+                _ => None,
+            })
+            .collect()
     }
 
     fn get_mock_flags(&self, is_bot1: bool) -> Vec<screeps_arena::objects::Flag> {
-        self.state.objects.iter().filter_map(|o| match o {
-            GameObject::Flag { id, pos, owner } => {
-                let my = if is_bot1 { *owner == Owner::Bot1 } else { *owner == Owner::Bot2 };
-                Some(screeps_arena::objects::Flag {
-                    base: screeps_arena::objects::GameObject {
-                        id: id.clone(),
-                        x: pos.x,
-                        y: pos.y,
-                    },
-                    my: Some(my),
-                })
-            }
-            _ => None,
-        }).collect()
+        self.state
+            .objects
+            .iter()
+            .filter_map(|o| match o {
+                GameObject::Flag { id, pos, owner } => {
+                    let my = if is_bot1 {
+                        *owner == Owner::Bot1
+                    } else {
+                        *owner == Owner::Bot2
+                    };
+                    Some(screeps_arena::objects::Flag {
+                        base: screeps_arena::objects::GameObject {
+                            id: id.clone(),
+                            x: pos.x,
+                            y: pos.y,
+                        },
+                        my: Some(my),
+                    })
+                }
+                _ => None,
+            })
+            .collect()
     }
 
-    fn get_mock_score_collectors(&self, is_bot1: bool) -> Vec<screeps_arena::objects::ScoreCollector> {
-        self.state.objects.iter().filter_map(|o| match o {
-            GameObject::ScoreCollector { id, pos, owner } => {
-                let my = if is_bot1 { *owner == Owner::Bot1 } else { *owner == Owner::Bot2 };
-                Some(screeps_arena::objects::ScoreCollector {
-                    base: screeps_arena::objects::GameObject {
-                        id: id.clone(),
-                        x: pos.x,
-                        y: pos.y,
-                    },
-                    my,
-                })
-            }
-            _ => None,
-        }).collect()
+    fn get_mock_score_collectors(
+        &self,
+        is_bot1: bool,
+    ) -> Vec<screeps_arena::objects::ScoreCollector> {
+        self.state
+            .objects
+            .iter()
+            .filter_map(|o| match o {
+                GameObject::ScoreCollector { id, pos, owner } => {
+                    let my = if is_bot1 {
+                        *owner == Owner::Bot1
+                    } else {
+                        *owner == Owner::Bot2
+                    };
+                    Some(screeps_arena::objects::ScoreCollector {
+                        base: screeps_arena::objects::GameObject {
+                            id: id.clone(),
+                            x: pos.x,
+                            y: pos.y,
+                        },
+                        my,
+                    })
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     fn get_mock_bonus_flags(&self, is_bot1: bool) -> Vec<screeps_arena::objects::BonusFlag> {
-        self.state.objects.iter().filter_map(|o| match o {
-            GameObject::BonusFlag { id, pos, owner } => {
-                let my = if is_bot1 { *owner == Owner::Bot1 } else { *owner == Owner::Bot2 };
-                Some(screeps_arena::objects::BonusFlag {
-                    base: screeps_arena::objects::GameObject {
-                        id: id.clone(),
-                        x: pos.x,
-                        y: pos.y,
-                    },
-                    my: Some(my),
-                })
-            }
-            _ => None,
-        }).collect()
+        self.state
+            .objects
+            .iter()
+            .filter_map(|o| match o {
+                GameObject::BonusFlag { id, pos, owner } => {
+                    let my = if is_bot1 {
+                        *owner == Owner::Bot1
+                    } else {
+                        *owner == Owner::Bot2
+                    };
+                    Some(screeps_arena::objects::BonusFlag {
+                        base: screeps_arena::objects::GameObject {
+                            id: id.clone(),
+                            x: pos.x,
+                            y: pos.y,
+                        },
+                        my: Some(my),
+                    })
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     fn get_mock_area_effects(&self) -> Vec<screeps_arena::objects::AreaEffect> {
-        self.state.objects.iter().filter_map(|o| match o {
-            GameObject::AreaEffect { id, pos, effect_type } => {
-                Some(screeps_arena::objects::AreaEffect {
+        self.state
+            .objects
+            .iter()
+            .filter_map(|o| match o {
+                GameObject::AreaEffect {
+                    id,
+                    pos,
+                    effect_type,
+                } => Some(screeps_arena::objects::AreaEffect {
                     base: screeps_arena::objects::GameObject {
                         id: id.clone(),
                         x: pos.x,
                         y: pos.y,
                     },
                     effect_type: effect_type.clone(),
-                })
-            }
-            _ => None,
-        }).collect()
+                }),
+                _ => None,
+            })
+            .collect()
     }
 
-    fn get_mock_construction_sites(&self, is_bot1: bool) -> Vec<screeps_arena::objects::ConstructionSite> {
-        self.state.objects.iter().filter_map(|o| match o {
-            GameObject::ConstructionSite { id, pos, owner, progress, progress_total } => {
-                let my = if is_bot1 { *owner == Owner::Bot1 } else { *owner == Owner::Bot2 };
-                Some(screeps_arena::objects::ConstructionSite {
-                    base: screeps_arena::objects::GameObject {
-                        id: id.clone(),
-                        x: pos.x,
-                        y: pos.y,
-                    },
-                    my,
-                    progress: *progress,
-                    progress_total: *progress_total,
-                })
-            }
-            _ => None,
-        }).collect()
+    fn get_mock_construction_sites(
+        &self,
+        is_bot1: bool,
+    ) -> Vec<screeps_arena::objects::ConstructionSite> {
+        self.state
+            .objects
+            .iter()
+            .filter_map(|o| match o {
+                GameObject::ConstructionSite {
+                    id,
+                    pos,
+                    owner,
+                    progress,
+                    progress_total,
+                } => {
+                    let my = if is_bot1 {
+                        *owner == Owner::Bot1
+                    } else {
+                        *owner == Owner::Bot2
+                    };
+                    Some(screeps_arena::objects::ConstructionSite {
+                        base: screeps_arena::objects::GameObject {
+                            id: id.clone(),
+                            x: pos.x,
+                            y: pos.y,
+                        },
+                        my,
+                        progress: *progress,
+                        progress_total: *progress_total,
+                    })
+                }
+                _ => None,
+            })
+            .collect()
     }
 }
 
@@ -965,8 +1287,12 @@ where
                 .unwrap_or_else(|_| Err(anyhow::anyhow!("Bot B thread panicked")))
         });
 
-        let res1 = handle1.join().unwrap_or_else(|_| Err(anyhow::anyhow!("Bot A thread join failed")));
-        let res2 = handle2.join().unwrap_or_else(|_| Err(anyhow::anyhow!("Bot B thread join failed")));
+        let res1 = handle1
+            .join()
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("Bot A thread join failed")));
+        let res2 = handle2
+            .join()
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("Bot B thread join failed")));
 
         (res1, res2)
     })

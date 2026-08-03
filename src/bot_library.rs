@@ -1,9 +1,9 @@
-use std::path::{Path, PathBuf};
-use std::fs;
-use std::collections::HashMap;
 use anyhow::{Context, Result};
-use serde::{Serialize, Deserialize};
-use sha2::{Sha256, Digest};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct KnownArena {
@@ -78,7 +78,10 @@ pub fn load_arena_terrain(
     arena_aliases: &HashMap<String, ArenaAlias>,
     width: u8,
     height: u8,
-) -> Result<(Vec<Vec<crate::models::Terrain>>, Vec<crate::models::GameObject>)> {
+) -> Result<(
+    Vec<Vec<crate::models::Terrain>>,
+    Vec<crate::models::GameObject>,
+)> {
     let width_u = width as usize;
     let height_u = height as usize;
     let mut available_layouts = Vec::new();
@@ -86,7 +89,10 @@ pub fn load_arena_terrain(
     // Resolve specified layout if alias
     let target_layout_id_or_file = specified_layout.map(|l| {
         let trimmed = l.trim();
-        layout_aliases.get(trimmed).map(|s| s.as_str()).unwrap_or(trimmed)
+        layout_aliases
+            .get(trimmed)
+            .map(|s| s.as_str())
+            .unwrap_or(trimmed)
     });
 
     let canonical_requested_arena = if let Some(target) = arena_aliases.get(arena_id.trim()) {
@@ -107,7 +113,8 @@ pub fn load_arena_terrain(
         if let Ok(content) = fs::read_to_string(&path) {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
                 // Infer arena_id from json payload or parent directory structure
-                let layout_arena = json.pointer("/game/arena")
+                let layout_arena = json
+                    .pointer("/game/arena")
                     .or_else(|| json.get("arena"))
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
@@ -121,7 +128,8 @@ pub fn load_arena_terrain(
                     });
 
                 // Infer game_id from json payload or parent directory name
-                let game_id = json.pointer("/game/game/_id")
+                let game_id = json
+                    .pointer("/game/game/_id")
                     .or_else(|| json.pointer("/game/_id"))
                     .or_else(|| json.get("_id"))
                     .and_then(|v| v.as_str())
@@ -130,7 +138,9 @@ pub fn load_arena_terrain(
                         path.parent()
                             .and_then(|p| p.file_name())
                             .and_then(|n| n.to_str())
-                            .unwrap_or_else(|| path.file_stem().and_then(|s| s.to_str()).unwrap_or(""))
+                            .unwrap_or_else(|| {
+                                path.file_stem().and_then(|s| s.to_str()).unwrap_or("")
+                            })
                             .to_string()
                     });
 
@@ -154,13 +164,17 @@ pub fn load_arena_terrain(
                     }
                 }
 
-                let raw_terrain = json.pointer("/game/game/terrain")
+                let raw_terrain = json
+                    .pointer("/game/game/terrain")
                     .or_else(|| json.pointer("/game/terrain"))
                     .or_else(|| json.get("terrain"))
                     .and_then(|v| v.as_str());
 
                 if let Some(terrain_str) = raw_terrain {
-                    valid_grids.push((path, crate::models::Terrain::parse_string(terrain_str, width_u, height_u)));
+                    valid_grids.push((
+                        path,
+                        crate::models::Terrain::parse_string(terrain_str, width_u, height_u),
+                    ));
                 }
             }
         }
@@ -168,9 +182,15 @@ pub fn load_arena_terrain(
 
     if valid_grids.is_empty() {
         if let Some(target) = specified_layout {
-            return Err(anyhow::anyhow!("Specified layout ID/alias '{}' was not found or invalid.", target));
+            return Err(anyhow::anyhow!(
+                "Specified layout ID/alias '{}' was not found or invalid.",
+                target
+            ));
         } else {
-            return Err(anyhow::anyhow!("No available layouts found for arena ID '{}'. Game cannot be launched.", arena_id));
+            return Err(anyhow::anyhow!(
+                "No available layouts found for arena ID '{}'. Game cannot be launched.",
+                arena_id
+            ));
         }
     }
 
@@ -231,7 +251,8 @@ fn load_layout_objects(layout_path: &Path) -> Vec<crate::models::GameObject> {
     };
 
     for item in arr {
-        let object_type = item.get("type")
+        let object_type = item
+            .get("type")
             .or_else(|| item.get("prototypeName"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
@@ -242,8 +263,14 @@ fn load_layout_objects(layout_path: &Path) -> Vec<crate::models::GameObject> {
 
         // in the screeps replay, it seemed that the default map objects had id of type integer,
         // while a creep that was spawned during tick 1 had id of type string.
-        let id = item.get("_id")
-            .and_then(|v| v.as_str().map(|s| s.to_string()).or_else(|| v.as_i64().map(|i| i.to_string())).or_else(|| v.as_u64().map(|u| u.to_string())))
+        let id = item
+            .get("_id")
+            .and_then(|v| {
+                v.as_str()
+                    .map(|s| s.to_string())
+                    .or_else(|| v.as_i64().map(|i| i.to_string()))
+                    .or_else(|| v.as_u64().map(|u| u.to_string()))
+            })
             .unwrap_or_else(|| format!("{}_{}_{}", object_type, x, y));
 
         let user = item.get("user").and_then(|v| v.as_str()).unwrap_or("");
@@ -254,9 +281,16 @@ fn load_layout_objects(layout_path: &Path) -> Vec<crate::models::GameObject> {
         };
 
         let hits = item.get("hits").and_then(|v| v.as_u64()).unwrap_or(100) as u32;
-        let max_hits = item.get("hitsMax").and_then(|v| v.as_u64()).unwrap_or(hits as u64) as u32;
-        let energy = item.pointer("/store/energy").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        let max_energy = item.pointer("/storeCapacityResource/energy")
+        let max_hits = item
+            .get("hitsMax")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(hits as u64) as u32;
+        let energy = item
+            .pointer("/store/energy")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        let max_energy = item
+            .pointer("/storeCapacityResource/energy")
             .or_else(|| item.get("energyCapacity"))
             .and_then(|v| v.as_u64())
             .unwrap_or(energy as u64) as u32;
@@ -270,84 +304,142 @@ fn load_layout_objects(layout_path: &Path) -> Vec<crate::models::GameObject> {
                 }
                 let fatigue = item.get("fatigue").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
                 objects.push(crate::models::GameObject::Creep {
-                    id, pos, hits, max_hits, owner, fatigue, spawning: false,
+                    id,
+                    pos,
+                    hits,
+                    max_hits,
+                    owner,
+                    fatigue,
+                    spawning: false,
                     body: Vec::new(),
                     store: std::collections::HashMap::new(),
                 });
             }
             "spawn" | "StructureSpawn" => {
                 objects.push(crate::models::GameObject::Spawn {
-                    id, pos, hits, max_hits, owner, energy, max_energy, spawning: None, next_id: String::new(),
+                    id,
+                    pos,
+                    hits,
+                    max_hits,
+                    owner,
+                    energy,
+                    max_energy,
+                    spawning: None,
+                    next_id: String::new(),
                 });
             }
             "tower" | "StructureTower" => {
                 objects.push(crate::models::GameObject::Tower {
-                    id, pos, hits, max_hits, owner, energy, max_energy,
+                    id,
+                    pos,
+                    hits,
+                    max_hits,
+                    owner,
+                    energy,
+                    max_energy,
                 });
             }
             "extension" | "StructureExtension" => {
                 objects.push(crate::models::GameObject::Extension {
-                    id, pos, hits, max_hits, owner, energy, max_energy,
+                    id,
+                    pos,
+                    hits,
+                    max_hits,
+                    owner,
+                    energy,
+                    max_energy,
                 });
             }
             "rampart" | "StructureRampart" => {
                 objects.push(crate::models::GameObject::Rampart {
-                    id, pos, hits, max_hits, owner,
+                    id,
+                    pos,
+                    hits,
+                    max_hits,
+                    owner,
                 });
             }
             "container" | "StructureContainer" => {
                 objects.push(crate::models::GameObject::Container {
-                    id, pos, hits, max_hits, energy, max_energy,
+                    id,
+                    pos,
+                    hits,
+                    max_hits,
+                    energy,
+                    max_energy,
                 });
             }
             "road" | "StructureRoad" => {
                 objects.push(crate::models::GameObject::Road {
-                    id, pos, hits, max_hits,
+                    id,
+                    pos,
+                    hits,
+                    max_hits,
                 });
             }
             "constructedWall" | "wall" | "StructureWall" => {
                 objects.push(crate::models::GameObject::Wall {
-                    id, pos, hits, max_hits,
+                    id,
+                    pos,
+                    hits,
+                    max_hits,
                 });
             }
             "constructionSite" | "ConstructionSite" => {
                 let progress = item.get("progress").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                let progress_total = item.get("progressTotal").and_then(|v| v.as_u64()).unwrap_or(100) as u32;
+                let progress_total = item
+                    .get("progressTotal")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(100) as u32;
                 objects.push(crate::models::GameObject::ConstructionSite {
-                    id, pos, owner, progress, progress_total,
+                    id,
+                    pos,
+                    owner,
+                    progress,
+                    progress_total,
                 });
             }
             "resource" | "Resource" => {
                 let amount = item.get("amount").and_then(|v| v.as_u64()).unwrap_or(100) as u32;
-                let resource_type = item.get("resourceType").and_then(|v| v.as_str()).unwrap_or("energy").to_string();
+                let resource_type = item
+                    .get("resourceType")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("energy")
+                    .to_string();
                 objects.push(crate::models::GameObject::Resource {
-                    id, pos, amount, resource_type,
+                    id,
+                    pos,
+                    amount,
+                    resource_type,
                 });
             }
             "source" | "Source" => {
                 objects.push(crate::models::GameObject::Source {
-                    id, pos, energy, max_energy,
+                    id,
+                    pos,
+                    energy,
+                    max_energy,
                 });
             }
             "flag" | "Flag" => {
-                objects.push(crate::models::GameObject::Flag {
-                    id, pos, owner,
-                });
+                objects.push(crate::models::GameObject::Flag { id, pos, owner });
             }
             "scoreCollector" | "ScoreCollector" => {
-                objects.push(crate::models::GameObject::ScoreCollector {
-                    id, pos, owner,
-                });
+                objects.push(crate::models::GameObject::ScoreCollector { id, pos, owner });
             }
             "bonusFlag" | "BonusFlag" => {
-                objects.push(crate::models::GameObject::BonusFlag {
-                    id, pos, owner,
-                });
+                objects.push(crate::models::GameObject::BonusFlag { id, pos, owner });
             }
             "areaEffect" | "AreaEffect" => {
-                let effect_type = item.get("effectType").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let effect_type = item
+                    .get("effectType")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 objects.push(crate::models::GameObject::AreaEffect {
-                    id, pos, effect_type,
+                    id,
+                    pos,
+                    effect_type,
                 });
             }
             _ => {}
@@ -366,17 +458,22 @@ pub struct LayoutInfo {
 }
 
 /// Discovers all layout files in <library_dir>/layouts, listing them with their alias, game ID, arena ID, and arena name.
-pub fn list_all_layouts(library_dir: &Path, layout_aliases: &HashMap<String, String>) -> Vec<LayoutInfo> {
+pub fn list_all_layouts(
+    library_dir: &Path,
+    layout_aliases: &HashMap<String, String>,
+) -> Vec<LayoutInfo> {
     let mut results = Vec::new();
     let mut seen_paths = std::collections::HashSet::new();
 
     let known_arenas = get_known_arenas();
-    let known_arena_map: HashMap<String, String> = known_arenas.into_iter()
+    let known_arena_map: HashMap<String, String> = known_arenas
+        .into_iter()
         .map(|a| (a.arena_id, a.name))
         .collect();
 
     // Reversible lookup: game_id / filename / path -> alias
-    let alias_lookup: HashMap<String, String> = layout_aliases.iter()
+    let alias_lookup: HashMap<String, String> = layout_aliases
+        .iter()
         .map(|(alias, target)| (target.clone(), alias.clone()))
         .collect();
 
@@ -398,7 +495,8 @@ pub fn list_all_layouts(library_dir: &Path, layout_aliases: &HashMap<String, Str
 
         if let Ok(content) = fs::read_to_string(&path) {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                let arena_id = json.pointer("/game/arena")
+                let arena_id = json
+                    .pointer("/game/arena")
                     .or_else(|| json.get("arena"))
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
@@ -411,7 +509,8 @@ pub fn list_all_layouts(library_dir: &Path, layout_aliases: &HashMap<String, Str
                     })
                     .unwrap_or_else(|| "unknown".to_string());
 
-                let game_id = json.pointer("/game/game/_id")
+                let game_id = json
+                    .pointer("/game/game/_id")
                     .or_else(|| json.pointer("/game/_id"))
                     .or_else(|| json.get("_id"))
                     .and_then(|v| v.as_str())
@@ -420,7 +519,11 @@ pub fn list_all_layouts(library_dir: &Path, layout_aliases: &HashMap<String, Str
                         path.parent()
                             .and_then(|p| p.file_name())
                             .and_then(|n| n.to_str())
-                            .unwrap_or_else(|| path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown"))
+                            .unwrap_or_else(|| {
+                                path.file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("unknown")
+                            })
                             .to_string()
                     });
 
@@ -429,14 +532,16 @@ pub fn list_all_layouts(library_dir: &Path, layout_aliases: &HashMap<String, Str
                 }
                 seen_ids.insert(game_id.clone());
 
-                let arena_name = known_arena_map.get(&arena_id)
+                let arena_name = known_arena_map
+                    .get(&arena_id)
                     .cloned()
                     .unwrap_or_else(|| "-".to_string());
 
                 let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
                 // Find alias matching game_id, filename, or path
-                let alias = alias_lookup.get(&game_id)
+                let alias = alias_lookup
+                    .get(&game_id)
                     .or_else(|| alias_lookup.get(filename))
                     .or_else(|| alias_lookup.get(&canonical_or_lossy))
                     .cloned();
@@ -509,7 +614,10 @@ where
     D: serde::Deserializer<'de>,
 {
     let raw: HashMap<String, AliasValue> = serde::Deserialize::deserialize(deserializer)?;
-    Ok(raw.into_iter().map(|(k, v)| (k, v.into_arena_alias())).collect())
+    Ok(raw
+        .into_iter()
+        .map(|(k, v)| (k, v.into_arena_alias()))
+        .collect())
 }
 
 impl Default for BotLibrary {
@@ -537,10 +645,10 @@ impl BotLibrary {
         if !meta_path.exists() {
             return Ok(BotLibrary::default());
         }
-        let content = fs::read_to_string(&meta_path)
-            .context("Failed to read bot library metadata file")?;
-        let mut lib: BotLibrary = serde_json::from_str(&content)
-            .context("Failed to parse bot library metadata JSON")?;
+        let content =
+            fs::read_to_string(&meta_path).context("Failed to read bot library metadata file")?;
+        let mut lib: BotLibrary =
+            serde_json::from_str(&content).context("Failed to parse bot library metadata JSON")?;
         if lib.next_id == 0 {
             lib.next_id = 1;
         }
@@ -552,8 +660,7 @@ impl BotLibrary {
         let meta_path = dir.join("bot_library.json");
         let content = serde_json::to_string_pretty(self)
             .context("Failed to serialize bot library metadata")?;
-        fs::write(meta_path, content)
-            .context("Failed to write bot library metadata file")?;
+        fs::write(meta_path, content).context("Failed to write bot library metadata file")?;
         Ok(())
     }
 
@@ -583,7 +690,13 @@ impl BotLibrary {
         }
     }
 
-    pub fn set_alias(&mut self, dir: &Path, alias: &str, arena_id: &str, name: Option<&str>) -> Result<()> {
+    pub fn set_alias(
+        &mut self,
+        dir: &Path,
+        alias: &str,
+        arena_id: &str,
+        name: Option<&str>,
+    ) -> Result<()> {
         let alias = alias.trim().to_string();
         let arena_id = arena_id.trim().to_string();
 
@@ -635,7 +748,13 @@ impl BotLibrary {
         Ok(())
     }
 
-    pub fn add(&mut self, dir: &Path, name: &str, arena_or_alias: &str, source_path: &Path) -> Result<BotEntry> {
+    pub fn add(
+        &mut self,
+        dir: &Path,
+        name: &str,
+        arena_or_alias: &str,
+        source_path: &Path,
+    ) -> Result<BotEntry> {
         let arena_id = self.resolve_arena_id(arena_or_alias);
         if arena_id.is_empty() {
             return Err(anyhow::anyhow!("Arena ID / alias cannot be empty"));
@@ -647,12 +766,16 @@ impl BotLibrary {
         if let Some(existing) = self.bots.iter().find(|b| b.sha256 == sha256) {
             return Err(anyhow::anyhow!(
                 "A bot binary with the same SHA256 hash already exists in the library as '{}:{}' (ID: {})",
-                existing.name, existing.version, existing.id
+                existing.name,
+                existing.version,
+                existing.id
             ));
         }
 
         // Find next version for this bot name
-        let version = self.bots.iter()
+        let version = self
+            .bots
+            .iter()
             .filter(|b| b.name == name)
             .map(|b| b.version)
             .max()
@@ -670,8 +793,12 @@ impl BotLibrary {
         let dest_path = dir.join(&dest_filename);
 
         fs::create_dir_all(dir).context("Failed to create bot library directory")?;
-        fs::copy(source_path, &dest_path)
-            .with_context(|| format!("Failed to copy bot binary from {:?} to {:?}", source_path, dest_path))?;
+        fs::copy(source_path, &dest_path).with_context(|| {
+            format!(
+                "Failed to copy bot binary from {:?} to {:?}",
+                source_path, dest_path
+            )
+        })?;
 
         let entry = BotEntry {
             id,
@@ -709,20 +836,29 @@ impl BotLibrary {
         let to_remove: Vec<usize> = if query.contains(':') {
             let parts: Vec<&str> = query.split(':').collect();
             let name = parts[0];
-            let version: u32 = parts[1].parse().context("Invalid version number in delete query")?;
-            self.bots.iter().enumerate()
+            let version: u32 = parts[1]
+                .parse()
+                .context("Invalid version number in delete query")?;
+            self.bots
+                .iter()
+                .enumerate()
                 .filter(|(_, b)| b.name == name && b.version == version)
                 .map(|(idx, _)| idx)
                 .collect()
         } else {
-            self.bots.iter().enumerate()
+            self.bots
+                .iter()
+                .enumerate()
                 .filter(|(_, b)| b.name == query)
                 .map(|(idx, _)| idx)
                 .collect()
         };
 
         if to_remove.is_empty() {
-            return Err(anyhow::anyhow!("No bots matching '{}' found in library", query));
+            return Err(anyhow::anyhow!(
+                "No bots matching '{}' found in library",
+                query
+            ));
         }
 
         // Remove files and entries in reverse order
@@ -738,4 +874,3 @@ impl BotLibrary {
         Ok(())
     }
 }
-

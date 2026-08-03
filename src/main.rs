@@ -3,16 +3,16 @@
 //! This binary provides administrative operations for managing the local
 //! bot library and executing arena simulations.
 
-use std::path::PathBuf;
-use clap::{Parser, Subcommand};
 use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
-mod models;
 mod bot_library;
 mod driver;
 mod executor;
+mod models;
 
-use models::{GameState, Position, GameObject, Owner, Terrain, Ruleset, WinCondition};
+use models::{GameObject, GameState, Owner, Position, Ruleset, Terrain, WinCondition};
 
 #[derive(Parser)]
 #[command(name = "screeps_arena_sim")]
@@ -159,7 +159,10 @@ fn get_default_library_dir() -> PathBuf {
     }
     if let Ok(home) = std::env::var("HOME") {
         if !home.is_empty() {
-            return PathBuf::from(home).join(".local").join("share").join("screeps_arena_sim");
+            return PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("screeps_arena_sim");
         }
     }
     PathBuf::from("./bot_library")
@@ -188,7 +191,6 @@ fn load_state(
     width: u8,
     height: u8,
 ) -> Result<GameState> {
-
     let (terrain, objects) = bot_library::load_arena_terrain(
         library_dir,
         arena_id,
@@ -211,8 +213,9 @@ fn load_state(
 fn main() -> Result<()> {
     env_logger::init();
     let cli = Cli::parse();
-    
-    let library_path = cli.library_dir
+
+    let library_path = cli
+        .library_dir
         .map(PathBuf::from)
         .unwrap_or_else(get_default_library_dir);
 
@@ -220,19 +223,32 @@ fn main() -> Result<()> {
         Commands::Arena { action } => match action {
             ArenaCommands::List => {
                 let arenas = bot_library::get_known_arenas();
-                println!("{:<30} | {:<25} | {:<10} | {}", "Arena Name", "Folder Name", "Advanced", "Arena ID");
+                println!(
+                    "{:<30} | {:<25} | {:<10} | {}",
+                    "Arena Name", "Folder Name", "Advanced", "Arena ID"
+                );
                 println!("{}", "-".repeat(95));
                 for arena in arenas {
-                    println!("{:<30} | {:<25} | {:<10} | {}", arena.name, arena.folder_name, arena.advanced, arena.arena_id);
+                    println!(
+                        "{:<30} | {:<25} | {:<10} | {}",
+                        arena.name, arena.folder_name, arena.advanced, arena.arena_id
+                    );
                 }
             }
         },
         Commands::Alias { action } => match action {
-            AliasCommands::Set { alias, arena_id, name } => {
+            AliasCommands::Set {
+                alias,
+                arena_id,
+                name,
+            } => {
                 let mut lib = bot_library::BotLibrary::load(&library_path)?;
                 lib.set_alias(&library_path, &alias, &arena_id, name.as_deref())?;
                 if let Some(ref n) = name {
-                    println!("Successfully set alias '{}' -> '{}' ({})", alias, arena_id, n);
+                    println!(
+                        "Successfully set alias '{}' -> '{}' ({})",
+                        alias, arena_id, n
+                    );
                 } else {
                     println!("Successfully set alias '{}' -> '{}'", alias, arena_id);
                 }
@@ -250,7 +266,11 @@ fn main() -> Result<()> {
                     println!("{:<15} | {:<25} | {}", "Alias", "Arena Name", "Arena ID");
                     println!("{}", "-".repeat(70));
                     for (alias, target) in &lib.aliases {
-                        let name_display = if target.name.is_empty() { "-" } else { &target.name };
+                        let name_display = if target.name.is_empty() {
+                            "-"
+                        } else {
+                            &target.name
+                        };
                         println!("{:<15} | {:<25} | {}", alias, name_display, target.arena_id);
                     }
                 }
@@ -273,11 +293,17 @@ fn main() -> Result<()> {
                 if layouts.is_empty() {
                     println!("No layout files found in layouts directory.");
                 } else {
-                    println!("{:<15} | {:<28} | {:<26} | {}", "Layout Alias", "Game ID", "Arena ID", "Arena Name");
+                    println!(
+                        "{:<15} | {:<28} | {:<26} | {}",
+                        "Layout Alias", "Game ID", "Arena ID", "Arena Name"
+                    );
                     println!("{}", "-".repeat(100));
                     for layout in layouts {
                         let alias_display = layout.alias.as_deref().unwrap_or("-");
-                        println!("{:<15} | {:<28} | {:<26} | {}", alias_display, layout.game_id, layout.arena_id, layout.arena_name);
+                        println!(
+                            "{:<15} | {:<28} | {:<26} | {}",
+                            alias_display, layout.game_id, layout.arena_id, layout.arena_name
+                        );
                     }
                 }
             }
@@ -286,36 +312,63 @@ fn main() -> Result<()> {
             BotCommands::Add { name, arena, path } => {
                 let mut lib = bot_library::BotLibrary::load(&library_path)?;
                 let entry = lib.add(&library_path, &name, &arena, &path)?;
-                println!("Successfully added bot '{}:{}' (ID: {}) linked to arena ID '{}'", entry.name, entry.version, entry.id, entry.arena_id);
+                println!(
+                    "Successfully added bot '{}:{}' (ID: {}) linked to arena ID '{}'",
+                    entry.name, entry.version, entry.id, entry.arena_id
+                );
             }
             BotCommands::Rename { old_name, new_name } => {
                 let mut lib = bot_library::BotLibrary::load(&library_path)?;
                 lib.rename(&library_path, &old_name, &new_name)?;
-                println!("Successfully renamed all bot revisions named '{}' to '{}'", old_name, new_name);
+                println!(
+                    "Successfully renamed all bot revisions named '{}' to '{}'",
+                    old_name, new_name
+                );
             }
             BotCommands::Delete { name_or_version } => {
                 let mut lib = bot_library::BotLibrary::load(&library_path)?;
                 lib.delete(&library_path, &name_or_version)?;
-                println!("Successfully deleted '{}' from the library", name_or_version);
+                println!(
+                    "Successfully deleted '{}' from the library",
+                    name_or_version
+                );
             }
             BotCommands::List => {
                 let lib = bot_library::BotLibrary::load(&library_path)?;
                 if lib.bots.is_empty() {
                     println!("The bot library is empty.");
                 } else {
-                    println!("{:<5} | {:<20} | {:<25} | {:<8} | {:<8} | {}", "ID", "Visible Name", "Arena Link", "Stable", "Crashes", "Binary Path");
+                    println!(
+                        "{:<5} | {:<20} | {:<25} | {:<8} | {:<8} | {}",
+                        "ID", "Visible Name", "Arena Link", "Stable", "Crashes", "Binary Path"
+                    );
                     println!("{}", "-".repeat(110));
                     for bot in lib.bots {
                         let visible_name = format!("{}:{}", bot.name, bot.version);
-                        println!("{:<5} | {:<20} | {:<25} | {:<8} | {:<8} | {}", bot.id, visible_name, bot.arena_id, bot.stable_count, bot.crash_count, bot.path);
+                        println!(
+                            "{:<5} | {:<20} | {:<25} | {:<8} | {:<8} | {}",
+                            bot.id,
+                            visible_name,
+                            bot.arena_id,
+                            bot.stable_count,
+                            bot.crash_count,
+                            bot.path
+                        );
                     }
                 }
             }
         },
-        Commands::Run { arena, bot1, bot2, layout, ticks, debug_bot } => {
+        Commands::Run {
+            arena,
+            bot1,
+            bot2,
+            layout,
+            ticks,
+            debug_bot,
+        } => {
             let lib = bot_library::BotLibrary::load(&library_path)?;
             let arena_id = lib.resolve_arena_id(&arena);
-            
+
             // Resolve Bot 1
             let bot1_entry = if let Ok(id) = bot1.parse::<u32>() {
                 lib.bots.iter().find(|b| b.id == id)
@@ -323,11 +376,17 @@ fn main() -> Result<()> {
                 let parts: Vec<&str> = bot1.split(':').collect();
                 if parts.len() == 2 {
                     let version = parts[1].parse::<u32>().unwrap_or(0);
-                    lib.bots.iter().find(|b| b.name == parts[0] && b.version == version)
+                    lib.bots
+                        .iter()
+                        .find(|b| b.name == parts[0] && b.version == version)
                 } else {
-                    lib.bots.iter().filter(|b| b.name == bot1).max_by_key(|b| b.version)
+                    lib.bots
+                        .iter()
+                        .filter(|b| b.name == bot1)
+                        .max_by_key(|b| b.version)
                 }
-            }.context(format!("Failed to find Bot 1 matching: {}", bot1))?;
+            }
+            .context(format!("Failed to find Bot 1 matching: {}", bot1))?;
             let bot1_id = bot1_entry.id;
             let bot1_path = &bot1_entry.path;
 
@@ -339,11 +398,17 @@ fn main() -> Result<()> {
                     let parts: Vec<&str> = b2_str.split(':').collect();
                     if parts.len() == 2 {
                         let version = parts[1].parse::<u32>().unwrap_or(0);
-                        lib.bots.iter().find(|b| b.name == parts[0] && b.version == version)
+                        lib.bots
+                            .iter()
+                            .find(|b| b.name == parts[0] && b.version == version)
                     } else {
-                        lib.bots.iter().filter(|b| b.name == b2_str.as_str()).max_by_key(|b| b.version)
+                        lib.bots
+                            .iter()
+                            .filter(|b| b.name == b2_str.as_str())
+                            .max_by_key(|b| b.version)
                     }
-                }.context(format!("Failed to find Bot 2 matching: {}", b2_str))?;
+                }
+                .context(format!("Failed to find Bot 2 matching: {}", b2_str))?;
                 Some((entry.id, entry.path.clone()))
             } else {
                 None
@@ -356,14 +421,24 @@ fn main() -> Result<()> {
                 println!("No Bot 2 specified: running single-bot simulation");
             }
 
-            let initial_state = load_state(&library_path, &arena_id, layout.as_deref(), &lib.layout_aliases, &lib.aliases, 100, 100)?;
+            let initial_state = load_state(
+                &library_path,
+                &arena_id,
+                layout.as_deref(),
+                &lib.layout_aliases,
+                &lib.aliases,
+                100,
+                100,
+            )?;
             let rules = Ruleset {
                 tick_limit: ticks,
                 cpu_time_limit: 1000,
                 win_condition: WinCondition::DestroyEnemySpawn,
             };
 
-            let p2_opt = bot2_resolved.as_ref().map(|(_, path)| std::path::Path::new(path));
+            let p2_opt = bot2_resolved
+                .as_ref()
+                .map(|(_, path)| std::path::Path::new(path));
             let mut executor = executor::RunExecutor::new(
                 initial_state,
                 std::path::Path::new(bot1_path),
@@ -402,11 +477,14 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Commands::BotRunner { bot_path, socket_fd, pause } => {
+        Commands::BotRunner {
+            bot_path,
+            socket_fd,
+            pause,
+        } => {
             driver::run_bot_runner_process(&bot_path, socket_fd, pause)?;
         }
     }
 
     Ok(())
 }
-
