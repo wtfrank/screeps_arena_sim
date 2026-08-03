@@ -414,7 +414,7 @@ impl RunExecutor {
                 // Check if target position is occupied by another moving creep
                 let occupant = current_positions
                     .iter()
-                    .find(|(other_id, &pos)| pos == target_pos && **other_id != creep_id)
+                    .find(|&(ref other_id, &pos)| pos == target_pos && **other_id != creep_id)
                     .map(|(other_id, _)| other_id.clone());
 
                 match occupant {
@@ -635,7 +635,7 @@ impl RunExecutor {
                 *fatigue = fatigue.saturating_sub(decay);
             }
             if let GameObject::Spawn { spawning, .. } = obj {
-                if let Some(ref mut progress) = spawning {
+                if let Some(progress) = spawning {
                     progress.remaining_time = progress.remaining_time.saturating_sub(1);
                     if progress.remaining_time == 0 {
                         completed_creep_ids.push(progress.creep_id.clone());
