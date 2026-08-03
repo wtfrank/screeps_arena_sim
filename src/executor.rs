@@ -400,36 +400,50 @@ impl RunExecutor {
                 // Calculate energy cost (assuming standard 100 energy per body part if default or decode from arg2)
                 let energy_cost = if body_len > 0 { body_len * 100 } else { 200 };
 
-                // Verify spawn ownership and presence
+                // Verify spawn ownership and presence, checking energy within SPAWN_RANGE
                 let mut spawn_pos = None;
                 let mut available_energy = 0;
+                let range = screeps_arena::constants::SPAWN_RANGE as u8;
+
                 for obj in &self.state.objects {
-                    match obj {
-                        GameObject::Spawn { id, owner: o, energy, pos, .. } if id == spawn_id && *o == owner => {
+                    if let GameObject::Spawn { id, owner: o, pos, .. } = obj {
+                        if id == spawn_id && *o == owner {
                             spawn_pos = Some(*pos);
-                            available_energy += *energy;
+                            break;
                         }
-                        GameObject::Extension { owner: o, energy, .. } if *o == owner => {
-                            available_energy += *energy;
-                        }
-                        _ => {}
                     }
                 }
 
-                if let Some(pos) = spawn_pos {
+                if let Some(spos) = spawn_pos {
+                    for obj in &self.state.objects {
+                        match obj {
+                            GameObject::Spawn { owner: o, energy, pos, .. }
+                                if *o == owner && pos.x.abs_diff(spos.x) <= range && pos.y.abs_diff(spos.y) <= range => {
+                                available_energy += *energy;
+                            }
+                            GameObject::Extension { owner: o, energy, pos, .. }
+                                if *o == owner && pos.x.abs_diff(spos.x) <= range && pos.y.abs_diff(spos.y) <= range => {
+                                available_energy += *energy;
+                            }
+                            _ => {}
+                        }
+                    }
+
                     if available_energy >= energy_cost {
                         let mut remaining_needed = energy_cost;
 
-                        // Deduct energy from extensions first, then spawns
+                        // Deduct energy from extensions first, then spawns (within SPAWN_RANGE)
                         for obj in &mut self.state.objects {
                             if remaining_needed == 0 { break; }
                             match obj {
-                                GameObject::Extension { owner: o, energy, .. } if *o == owner && *energy > 0 => {
+                                GameObject::Extension { owner: o, energy, pos, .. }
+                                    if *o == owner && *energy > 0 && pos.x.abs_diff(spos.x) <= range && pos.y.abs_diff(spos.y) <= range => {
                                     let deduct = (*energy).min(remaining_needed);
                                     *energy -= deduct;
                                     remaining_needed -= deduct;
                                 }
-                                GameObject::Spawn { id, owner: o, energy, .. } if id == spawn_id && *o == owner && *energy > 0 => {
+                                GameObject::Spawn { owner: o, energy, pos, .. }
+                                    if *o == owner && *energy > 0 && pos.x.abs_diff(spos.x) <= range && pos.y.abs_diff(spos.y) <= range => {
                                     let deduct = (*energy).min(remaining_needed);
                                     *energy -= deduct;
                                     remaining_needed -= deduct;
@@ -480,7 +494,7 @@ impl RunExecutor {
                         // Add new creep with spawning: true
                         self.state.objects.push(GameObject::Creep {
                             id: new_creep_id,
-                            pos,
+                            pos: spos,
                             hits: (body_len.max(1) * 100),
                             max_hits: (body_len.max(1) * 100),
                             owner,
