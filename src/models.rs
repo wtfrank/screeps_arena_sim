@@ -30,6 +30,8 @@ pub enum GameObject {
         owner: Owner,
         fatigue: u8,
         spawning: bool,
+        body: Vec<screeps_arena::constants::Part>,
+        store: std::collections::HashMap<screeps_arena::constants::ResourceType, u32>,
     },
     Spawn {
         id: String,

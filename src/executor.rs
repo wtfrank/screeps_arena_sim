@@ -305,56 +305,156 @@ impl RunExecutor {
     }
 
     fn resolve_actions(&mut self, actions1: Vec<QueuedAction>, actions2: Vec<QueuedAction>) {
-        // Resolve movement intents
-        let mut move_intents = HashMap::new();
-        for act in actions1.iter().filter(|a| a.action == ActionId::Move) {
-            move_intents.insert(act.actor_id.clone(), (act.arg1 as u8, Owner::Bot1));
-        }
-        for act in actions2.iter().filter(|a| a.action == ActionId::Move) {
-            move_intents.insert(act.actor_id.clone(), (act.arg1 as u8, Owner::Bot2));
+        // Resolve movement intents for non-fatigued creeps
+        let mut move_intents: HashMap<String, Position> = HashMap::new();
+        let mut current_positions: HashMap<String, Position> = HashMap::new();
+
+        for obj in &self.state.objects {
+            if let GameObject::Creep { id, pos, fatigue, spawning, .. } = obj {
+                if *fatigue == 0 && !*spawning {
+                    current_positions.insert(id.clone(), *pos);
+                }
+            }
         }
 
-        // Apply movement changes (simplified: direct write, bounce on overlap)
-        let mut new_positions = HashMap::new();
-        for obj in &self.state.objects {
-            if let GameObject::Creep { id, pos, .. } = obj {
-                if let Some(&(direction, _)) = move_intents.get(id) {
-                    let mut next_pos = *pos;
-                    match direction {
-                        1 => { next_pos.y = next_pos.y.saturating_sub(1); } // Top
-                        2 => { next_pos.x = next_pos.x.saturating_add(1); next_pos.y = next_pos.y.saturating_sub(1); } // TopRight
-                        3 => { next_pos.x = next_pos.x.saturating_add(1); } // Right
-                        4 => { next_pos.x = next_pos.x.saturating_add(1); next_pos.y = next_pos.y.saturating_add(1); } // BottomRight
-                        5 => { next_pos.y = next_pos.y.saturating_add(1); } // Bottom
-                        6 => { next_pos.x = next_pos.x.saturating_sub(1); next_pos.y = next_pos.y.saturating_add(1); } // BottomLeft
-                        7 => { next_pos.x = next_pos.x.saturating_sub(1); } // Left
-                        8 => { next_pos.x = next_pos.x.saturating_sub(1); next_pos.y = next_pos.y.saturating_sub(1); } // TopLeft
-                        _ => {}
-                    }
-                    // Prevent leaving bounds
-                    if next_pos.x < self.state.width && next_pos.y < self.state.height {
-                        new_positions.insert(id.clone(), next_pos);
+        for act in actions1.iter().chain(actions2.iter()).filter(|a| a.action == ActionId::Move) {
+            let id = &act.actor_id;
+            if let Some(&curr_pos) = current_positions.get(id) {
+                let dir = act.arg1 as u8;
+                let mut target_pos = curr_pos;
+                match dir {
+                    1 => { target_pos.y = target_pos.y.saturating_sub(1); } // Top
+                    2 => { target_pos.x = target_pos.x.saturating_add(1); target_pos.y = target_pos.y.saturating_sub(1); } // TopRight
+                    3 => { target_pos.x = target_pos.x.saturating_add(1); } // Right
+                    4 => { target_pos.x = target_pos.x.saturating_add(1); target_pos.y = target_pos.y.saturating_add(1); } // BottomRight
+                    5 => { target_pos.y = target_pos.y.saturating_add(1); } // Bottom
+                    6 => { target_pos.x = target_pos.x.saturating_sub(1); target_pos.y = target_pos.y.saturating_add(1); } // BottomLeft
+                    7 => { target_pos.x = target_pos.x.saturating_sub(1); } // Left
+                    8 => { target_pos.x = target_pos.x.saturating_sub(1); target_pos.y = target_pos.y.saturating_sub(1); } // TopLeft
+                    _ => {}
+                }
+
+                // Verify inside arena bounds and not moving into a Wall
+                if target_pos.x < self.state.width && target_pos.y < self.state.height {
+                    let terrain = self.state.terrain[target_pos.x as usize][target_pos.y as usize];
+                    if terrain != Terrain::Wall {
+                        move_intents.insert(id.clone(), target_pos);
                     }
                 }
             }
         }
 
-        // Collect positions of non-moving creeps to avoid double borrows inside the mutation loop
-        let non_moving_occupied: std::collections::HashSet<Position> = self.state.objects.iter().filter_map(|o| match o {
-            GameObject::Creep { id, pos, .. } if !new_positions.contains_key(id) => Some(*pos),
-            _ => None
-        }).collect();
+        // Collect static obstacles: non-moving creeps, spawns, towers, extensions, ramparts, constructed walls
+        let mut blocked_tiles: std::collections::HashSet<Position> = std::collections::HashSet::new();
 
-        // Apply updates back to the state objects
-        for obj in &mut self.state.objects {
-            if let GameObject::Creep { id, pos, fatigue, .. } = obj {
-                if let Some(next_pos) = new_positions.get(id) {
-                    let target_occupied = non_moving_occupied.contains(next_pos);
-
-                    if !target_occupied {
-                        *pos = *next_pos;
-                        *fatigue = fatigue.saturating_add(2);
+        for obj in &self.state.objects {
+            match obj {
+                GameObject::Creep { id, pos, .. } => {
+                    if !move_intents.contains_key(id) {
+                        blocked_tiles.insert(*pos);
                     }
+                }
+                GameObject::Spawn { pos, .. }
+                | GameObject::Tower { pos, .. }
+                | GameObject::Extension { pos, .. }
+                | GameObject::Wall { pos, .. } => {
+                    blocked_tiles.insert(*pos);
+                }
+                _ => {}
+            }
+        }
+
+        // Reject move intents if multiple creeps target the exact same tile
+        let mut target_counts: HashMap<Position, usize> = HashMap::new();
+        for target in move_intents.values() {
+            *target_counts.entry(*target).or_insert(0) += 1;
+        }
+
+        // Iteratively resolve valid moves (allowing chaining & swapping)
+        let mut approved_moves: HashMap<String, Position> = HashMap::new();
+        let mut resolved = true;
+
+        while resolved {
+            resolved = false;
+            let current_intents: Vec<(String, Position)> = move_intents
+                .iter()
+                .filter(|(id, _)| !approved_moves.contains_key(*id))
+                .map(|(id, p)| (id.clone(), *p))
+                .collect();
+
+            for (creep_id, target_pos) in current_intents {
+                // Reject if multiple creeps contend for the same destination tile
+                if target_counts.get(&target_pos).cloned().unwrap_or(0) > 1 {
+                    move_intents.remove(&creep_id);
+                    if let Some(&start) = current_positions.get(&creep_id) {
+                        blocked_tiles.insert(start);
+                    }
+                    resolved = true;
+                    continue;
+                }
+
+                // Check if target position is blocked by a static obstacle
+                if blocked_tiles.contains(&target_pos) {
+                    move_intents.remove(&creep_id);
+                    if let Some(&start) = current_positions.get(&creep_id) {
+                        blocked_tiles.insert(start);
+                    }
+                    resolved = true;
+                    continue;
+                }
+
+                // Check if target position is occupied by another moving creep
+                let occupant = current_positions
+                    .iter()
+                    .find(|(other_id, &pos)| pos == target_pos && **other_id != creep_id)
+                    .map(|(other_id, _)| other_id.clone());
+
+                match occupant {
+                    None => {
+                        // Target tile is vacant -> move approved!
+                        approved_moves.insert(creep_id, target_pos);
+                        resolved = true;
+                    }
+                    Some(other_id) => {
+                        if let Some(&other_target) = move_intents.get(&other_id) {
+                            let curr_pos = current_positions[&creep_id];
+                            // Check for position swap (A -> B and B -> A)
+                            let is_swap = other_target == curr_pos;
+
+                            if is_swap {
+                                // Swap approved!
+                                approved_moves.insert(creep_id, target_pos);
+                                approved_moves.insert(other_id, curr_pos);
+                                resolved = true;
+                            } else if approved_moves.contains_key(&other_id) {
+                                // Occupant has already successfully moved out -> chain move approved!
+                                approved_moves.insert(creep_id, target_pos);
+                                resolved = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply approved moves and calculate fatigue according to Screeps rules
+        for obj in &mut self.state.objects {
+            if let GameObject::Creep { id, pos, fatigue, body, store, .. } = obj {
+                if let Some(&new_pos) = approved_moves.get(id) {
+                    *pos = new_pos;
+                    let move_parts = body.iter().filter(|&&p| p == screeps_arena::constants::Part::Move).count() as u32;
+                    let carry_parts = body.iter().filter(|&&p| p == screeps_arena::constants::Part::Carry).count() as u32;
+                    let store_used: u32 = store.values().sum();
+                    let active_carries = (store_used.div_ceil(50)).min(carry_parts);
+
+                    let non_carry_non_move_weight = body.iter().filter(|&&p| p != screeps_arena::constants::Part::Move && p != screeps_arena::constants::Part::Carry).count() as u32;
+                    let total_weight = non_carry_non_move_weight + active_carries;
+
+                    let terrain = self.state.terrain[new_pos.x as usize][new_pos.y as usize];
+                    let terrain_cost = if terrain == Terrain::Swamp { 10 } else { 2 };
+                    let added_fatigue = (total_weight * terrain_cost).saturating_sub(move_parts * 2);
+
+                    *fatigue = (*fatigue as u32 + added_fatigue).min(255) as u8;
                 }
             }
         }
@@ -500,6 +600,8 @@ impl RunExecutor {
                             owner,
                             fatigue: 0,
                             spawning: true,
+                            body: Vec::new(),
+                            store: HashMap::new(),
                         });
                     }
                 }
@@ -519,8 +621,10 @@ impl RunExecutor {
         let mut completed_creep_ids = Vec::new();
 
         for obj in &mut self.state.objects {
-            if let GameObject::Creep { fatigue, .. } = obj {
-                *fatigue = fatigue.saturating_sub(2);
+            if let GameObject::Creep { fatigue, body, .. } = obj {
+                let move_parts = body.iter().filter(|&&p| p == screeps_arena::constants::Part::Move).count() as u8;
+                let decay = if move_parts > 0 { move_parts * 2 } else { 2 };
+                *fatigue = fatigue.saturating_sub(decay);
             }
             if let GameObject::Spawn { spawning, .. } = obj {
                 if let Some(ref mut progress) = spawning {
@@ -547,7 +651,7 @@ impl RunExecutor {
 
     fn get_mock_creeps(&self, is_bot1: bool) -> Vec<screeps_arena::objects::Creep> {
         self.state.objects.iter().filter_map(|o| match o {
-            GameObject::Creep { id, pos, hits, max_hits, owner, fatigue, spawning } => {
+            GameObject::Creep { id, pos, hits, max_hits, owner, fatigue, spawning, .. } => {
                 let my = if is_bot1 { *owner == Owner::Bot1 } else { *owner == Owner::Bot2 };
                 Some(screeps_arena::objects::Creep {
                     base: screeps_arena::objects::GameObject {
