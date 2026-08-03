@@ -1382,3 +1382,251 @@ where
         (res1, res2)
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::driver::QueuedAction;
+    use crate::models::{GameObject, GameState, Owner, Position, Ruleset, Terrain};
+    use screeps_arena::ffi::ActionId;
+    use std::collections::HashMap;
+
+    fn create_test_executor() -> RunExecutor {
+        let state = GameState {
+            tick: 1,
+            width: 100,
+            height: 100,
+            terrain: vec![vec![Terrain::Plain; 100]; 100],
+            objects: Vec::new(),
+        };
+        RunExecutor {
+            rules: Ruleset {
+                tick_limit: 2000,
+                cpu_time_limit: 50,
+                win_condition: crate::models::WinCondition::DestroyEnemySpawn,
+            },
+            state,
+            bot1_driver: None,
+            bot2_driver: None,
+            bot1_crashed: false,
+            bot2_crashed: false,
+            debug_b1: false,
+            debug_b2: false,
+            next_id: 1000,
+        }
+    }
+
+    #[test]
+    fn test_fatigue_decay() {
+        let mut exec = create_test_executor();
+        exec.state.objects.push(GameObject::Creep {
+            id: "creep1".to_string(),
+            pos: Position { x: 10, y: 10 },
+            hits: 100,
+            max_hits: 100,
+            owner: Owner::Bot1,
+            fatigue: 5,
+            spawning: false,
+            body: vec![screeps_arena::constants::Part::Move, screeps_arena::constants::Part::Move],
+            store: HashMap::new(),
+        });
+
+        // 2 MOVE parts decay 4 fatigue per tick down to 0
+        exec.apply_tick_decay();
+        if let GameObject::Creep { fatigue, .. } = &exec.state.objects[0] {
+            assert_eq!(*fatigue, 1);
+        } else {
+            panic!("Expected creep object");
+        }
+
+        exec.apply_tick_decay();
+        if let GameObject::Creep { fatigue, .. } = &exec.state.objects[0] {
+            assert_eq!(*fatigue, 0);
+        } else {
+            panic!("Expected creep object");
+        }
+    }
+
+    #[test]
+    fn test_movement_position_swap() {
+        let mut exec = create_test_executor();
+        // Creep 1 at (10, 10), Creep 2 at (11, 10)
+        exec.state.objects.push(GameObject::Creep {
+            id: "creep1".to_string(),
+            pos: Position { x: 10, y: 10 },
+            hits: 100,
+            max_hits: 100,
+            owner: Owner::Bot1,
+            fatigue: 0,
+            spawning: false,
+            body: vec![screeps_arena::constants::Part::Move],
+            store: HashMap::new(),
+        });
+        exec.state.objects.push(GameObject::Creep {
+            id: "creep2".to_string(),
+            pos: Position { x: 11, y: 10 },
+            hits: 100,
+            max_hits: 100,
+            owner: Owner::Bot2,
+            fatigue: 0,
+            spawning: false,
+            body: vec![screeps_arena::constants::Part::Move],
+            store: HashMap::new(),
+        });
+
+        // Creep 1 moves Right (3 -> x+1, (11,10))
+        // Creep 2 moves Left (7 -> x-1, (10,10))
+        let actions1 = vec![QueuedAction {
+            actor_id: "creep1".to_string(),
+            action: ActionId::Move,
+            target_id: None,
+            arg1: 3,
+            arg2: 0,
+        }];
+        let actions2 = vec![QueuedAction {
+            actor_id: "creep2".to_string(),
+            action: ActionId::Move,
+            target_id: None,
+            arg1: 7,
+            arg2: 0,
+        }];
+
+        exec.resolve_actions(actions1, actions2);
+
+        // Position swap must succeed
+        if let GameObject::Creep { pos, .. } = &exec.state.objects[0] {
+            assert_eq!(*pos, Position { x: 11, y: 10 });
+        }
+        if let GameObject::Creep { pos, .. } = &exec.state.objects[1] {
+            assert_eq!(*pos, Position { x: 10, y: 10 });
+        }
+    }
+
+    #[test]
+    fn test_contested_tile_rejection() {
+        let mut exec = create_test_executor();
+        // Creep 1 at (10, 10), Creep 2 at (12, 10) targeting (11, 10)
+        exec.state.objects.push(GameObject::Creep {
+            id: "creep1".to_string(),
+            pos: Position { x: 10, y: 10 },
+            hits: 100,
+            max_hits: 100,
+            owner: Owner::Bot1,
+            fatigue: 0,
+            spawning: false,
+            body: vec![screeps_arena::constants::Part::Move],
+            store: HashMap::new(),
+        });
+        exec.state.objects.push(GameObject::Creep {
+            id: "creep2".to_string(),
+            pos: Position { x: 12, y: 10 },
+            hits: 100,
+            max_hits: 100,
+            owner: Owner::Bot2,
+            fatigue: 0,
+            spawning: false,
+            body: vec![screeps_arena::constants::Part::Move],
+            store: HashMap::new(),
+        });
+
+        // Both move into (11, 10)
+        let actions1 = vec![QueuedAction {
+            actor_id: "creep1".to_string(),
+            action: ActionId::Move,
+            target_id: None,
+            arg1: 3, // Right
+            arg2: 0,
+        }];
+        let actions2 = vec![QueuedAction {
+            actor_id: "creep2".to_string(),
+            action: ActionId::Move,
+            target_id: None,
+            arg1: 7, // Left
+            arg2: 0,
+        }];
+
+        exec.resolve_actions(actions1, actions2);
+
+        // Both moves fail and stay put
+        if let GameObject::Creep { pos, .. } = &exec.state.objects[0] {
+            assert_eq!(*pos, Position { x: 10, y: 10 });
+        }
+        if let GameObject::Creep { pos, .. } = &exec.state.objects[1] {
+            assert_eq!(*pos, Position { x: 12, y: 10 });
+        }
+    }
+
+    #[test]
+    fn test_move_into_wall_rejected() {
+        let mut exec = create_test_executor();
+        exec.state.terrain[11][10] = Terrain::Wall;
+        exec.state.objects.push(GameObject::Creep {
+            id: "creep1".to_string(),
+            pos: Position { x: 10, y: 10 },
+            hits: 100,
+            max_hits: 100,
+            owner: Owner::Bot1,
+            fatigue: 0,
+            spawning: false,
+            body: vec![screeps_arena::constants::Part::Move],
+            store: HashMap::new(),
+        });
+
+        let actions1 = vec![QueuedAction {
+            actor_id: "creep1".to_string(),
+            action: ActionId::Move,
+            target_id: None,
+            arg1: 3, // Right into Wall
+            arg2: 0,
+        }];
+
+        exec.resolve_actions(actions1, Vec::new());
+
+        if let GameObject::Creep { pos, .. } = &exec.state.objects[0] {
+            assert_eq!(*pos, Position { x: 10, y: 10 });
+        }
+    }
+
+    #[test]
+    fn test_spawn_creep_energy_range_and_busy() {
+        let mut exec = create_test_executor();
+
+        // Friendly spawn at (10, 10) with 300 energy
+        exec.state.objects.push(GameObject::Spawn {
+            id: "spawn1".to_string(),
+            pos: Position { x: 10, y: 10 },
+            hits: 5000,
+            max_hits: 5000,
+            owner: Owner::Bot1,
+            energy: 300,
+            max_energy: 300,
+            spawning: None,
+            next_id: "creep101".to_string(),
+        });
+
+        // Spawn 1 creep with 2 body parts (cost 200)
+        let actions1 = vec![QueuedAction {
+            actor_id: "spawn1".to_string(),
+            action: ActionId::SpawnCreep,
+            target_id: None,
+            arg1: 2,
+            arg2: 0,
+        }];
+
+        exec.resolve_actions(actions1.clone(), Vec::new());
+
+        // Spawn energy should be deducted (300 -> 100) and spawning state set
+        if let GameObject::Spawn { energy, spawning, .. } = &exec.state.objects[0] {
+            assert_eq!(*energy, 100);
+            assert!(spawning.is_some());
+        } else {
+            panic!("Expected spawn");
+        }
+
+        // Submitting another spawn request on the busy spawn must fail
+        exec.resolve_actions(actions1, Vec::new());
+        if let GameObject::Spawn { energy, .. } = &exec.state.objects[0] {
+            assert_eq!(*energy, 100); // Energy unchanged
+        }
+    }
+}
