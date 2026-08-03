@@ -38,6 +38,7 @@ struct BotExecutionContext {
     pub bonus_flag_cache: Vec<screeps_arena::objects::BonusFlag>,
     pub area_effect_cache: Vec<screeps_arena::objects::AreaEffect>,
     pub construction_site_cache: Vec<screeps_arena::objects::ConstructionSite>,
+    pub owned_structure_cache: Vec<screeps_arena::objects::OwnedStructure>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -64,11 +65,11 @@ extern "C" fn get_terrain_at_callback(_x: u8, _y: u8) -> u32 {
     0
 }
 
-extern "C" fn get_objects_callback(proto: u32, out_ptr: *mut *const c_void, out_len: *mut usize) {
+extern "C" fn get_objects_callback(proto_id: u32, out_ptr: *mut *const c_void, out_len: *mut usize) {
     CURRENT_BOT_CONTEXT.with(|ctx| {
         if let Some(ref c) = *ctx.borrow() {
             unsafe {
-                match proto {
+                match proto_id {
                     1 => {
                         // Creep
                         *out_ptr = c.creep_cache.as_ptr() as *const c_void;
@@ -144,6 +145,11 @@ extern "C" fn get_objects_callback(proto: u32, out_ptr: *mut *const c_void, out_
                         *out_ptr = c.construction_site_cache.as_ptr() as *const c_void;
                         *out_len = c.construction_site_cache.len();
                     }
+                    16 => {
+                        // OwnedStructure
+                        *out_ptr = c.owned_structure_cache.as_ptr() as *const c_void;
+                        *out_len = c.owned_structure_cache.len();
+                    }
                     _ => {
                         *out_ptr = std::ptr::null();
                         *out_len = 0;
@@ -211,6 +217,7 @@ pub struct BotTickMessage {
     pub bonus_flags: Vec<screeps_arena::objects::BonusFlag>,
     pub area_effects: Vec<screeps_arena::objects::AreaEffect>,
     pub construction_sites: Vec<screeps_arena::objects::ConstructionSite>,
+    pub owned_structures: Vec<screeps_arena::objects::OwnedStructure>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -501,6 +508,7 @@ pub fn run_bot_runner_process(bot_path: &str, socket_fd: i32, pause: bool) -> Re
                     bonus_flag_cache: tick_msg.bonus_flags,
                     area_effect_cache: tick_msg.area_effects,
                     construction_site_cache: tick_msg.construction_sites,
+                    owned_structure_cache: tick_msg.owned_structures,
                 };
 
                 CURRENT_BOT_CONTEXT.with(|ctx| {

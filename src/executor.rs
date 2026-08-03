@@ -132,6 +132,7 @@ impl RunExecutor {
         let bot1_bonus_flags = self.get_mock_bonus_flags(true);
         let bot1_area_effects = self.get_mock_area_effects();
         let bot1_construction_sites = self.get_mock_construction_sites(true);
+        let bot1_owned_structures = self.get_mock_owned_structures(true);
 
         let bot2_creeps = self.get_mock_creeps(false);
         let bot2_spawns = self.get_mock_spawns(false);
@@ -148,6 +149,7 @@ impl RunExecutor {
         let bot2_bonus_flags = self.get_mock_bonus_flags(false);
         let bot2_area_effects = self.get_mock_area_effects();
         let bot2_construction_sites = self.get_mock_construction_sites(false);
+        let bot2_owned_structures = self.get_mock_owned_structures(false);
 
         // 2. Run active (non-crashed) bots in parallel threads
         let timeout_b1 = if self.debug_b1 {
@@ -184,6 +186,7 @@ impl RunExecutor {
                             bonus_flags: bot1_bonus_flags,
                             area_effects: bot1_area_effects,
                             construction_sites: bot1_construction_sites,
+                            owned_structures: bot1_owned_structures,
                         };
                         d1.tick(msg, timeout_b1)
                     } else {
@@ -214,6 +217,7 @@ impl RunExecutor {
                             bonus_flags: bot2_bonus_flags,
                             area_effects: bot2_area_effects,
                             construction_sites: bot2_construction_sites,
+                            owned_structures: bot2_owned_structures,
                         };
                         d2.tick(msg, timeout_b2)
                     } else {
@@ -1259,6 +1263,33 @@ impl RunExecutor {
                 _ => None,
             })
             .collect()
+    }
+
+    fn get_mock_owned_structures(&self, is_bot1: bool) -> Vec<screeps_arena::objects::OwnedStructure> {
+        let mut result = Vec::new();
+
+        for obj in &self.state.objects {
+            match obj {
+                GameObject::Spawn { id, pos, owner, .. }
+                | GameObject::Tower { id, pos, owner, .. }
+                | GameObject::Extension { id, pos, owner, .. } => {
+                    let my = if is_bot1 { *owner == Owner::Bot1 } else { *owner == Owner::Bot2 };
+                    result.push(screeps_arena::objects::OwnedStructure {
+                        base: screeps_arena::objects::Structure {
+                            base: screeps_arena::objects::GameObject {
+                                id: id.clone(),
+                                x: pos.x,
+                                y: pos.y,
+                            },
+                        },
+                        my: Some(my),
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        result
     }
 }
 
