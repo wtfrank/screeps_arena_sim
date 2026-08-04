@@ -599,20 +599,21 @@ impl RunExecutor {
                     *pos = new_pos;
                     let move_parts = body
                         .iter()
-                        .filter(|&&p| p == screeps_arena::constants::Part::Move)
+                        .filter(|p| p.hits > 0 && p.part == screeps_arena::constants::Part::Move)
                         .count() as u32;
                     let carry_parts = body
                         .iter()
-                        .filter(|&&p| p == screeps_arena::constants::Part::Carry)
+                        .filter(|p| p.hits > 0 && p.part == screeps_arena::constants::Part::Carry)
                         .count() as u32;
                     let store_used: u32 = store.values().sum();
                     let active_carries = (store_used.div_ceil(50)).min(carry_parts);
 
                     let non_carry_non_move_weight = body
                         .iter()
-                        .filter(|&&p| {
-                            p != screeps_arena::constants::Part::Move
-                                && p != screeps_arena::constants::Part::Carry
+                        .filter(|p| {
+                            p.hits > 0
+                                && p.part != screeps_arena::constants::Part::Move
+                                && p.part != screeps_arena::constants::Part::Carry
                         })
                         .count() as u32;
                     let total_weight = non_carry_non_move_weight + active_carries;
@@ -720,13 +721,13 @@ impl RunExecutor {
                                 harvest_pos = Some(*pos);
                                 let work_parts = body
                                     .iter()
-                                    .filter(|&&p| p == screeps_arena::constants::Part::Work)
+                                    .filter(|p| p.hits > 0 && p.part == screeps_arena::constants::Part::Work)
                                     .count() as u32;
                                 harvest_power = work_parts * 2;
 
                                 let carry_parts = body
                                     .iter()
-                                    .filter(|&&p| p == screeps_arena::constants::Part::Carry)
+                                    .filter(|p| p.hits > 0 && p.part == screeps_arena::constants::Part::Carry)
                                     .count() as u32;
                                 let max_capacity = carry_parts * 50;
                                 let current_used: u32 = store.values().sum();
@@ -848,7 +849,7 @@ impl RunExecutor {
                                 creep_pos = Some(*pos);
                                 let carry_parts = body
                                     .iter()
-                                    .filter(|&&p| p == screeps_arena::constants::Part::Carry)
+                                    .filter(|p| p.hits > 0 && p.part == screeps_arena::constants::Part::Carry)
                                     .count() as u32;
                                 let max_capacity = carry_parts * 50;
                                 let current_used: u32 = store.values().sum();
@@ -911,17 +912,41 @@ impl RunExecutor {
         for act in &valid_actions {
             if act.action == ActionId::Attack {
                 if let Some(ref target) = act.target_id {
-                    *damage_map.entry(target.clone()).or_insert(0) += 30; // standard creep attack
+                    let mut attack_power = 30; // default standard attack power
+                    if let Some(attacker) = self.state.objects.iter().find(|o| match o {
+                        GameObject::Creep { id, .. } => id == &act.actor_id,
+                        _ => false,
+                    }) {
+                        if let GameObject::Creep { body, .. } = attacker {
+                            let active_attack_parts = body
+                                .iter()
+                                .filter(|p| p.hits > 0 && p.part == screeps_arena::constants::Part::Attack)
+                                .count() as u32;
+                            if active_attack_parts > 0 {
+                                attack_power = active_attack_parts * 30;
+                            }
+                        }
+                    }
+                    *damage_map.entry(target.clone()).or_insert(0) += attack_power;
                 }
             }
         }
 
-        // Apply damages
+        // Apply damages and update individual body part hits front-to-back (index 0 first)
         for obj in &mut self.state.objects {
             match obj {
-                GameObject::Creep { id, hits, .. } => {
+                GameObject::Creep { id, hits, body, .. } => {
                     if let Some(&dmg) = damage_map.get(id) {
-                        *hits = hits.saturating_sub(dmg);
+                        let mut remaining_dmg = dmg;
+                        for part in body.iter_mut() {
+                            if remaining_dmg == 0 {
+                                break;
+                            }
+                            let d = part.hits.min(remaining_dmg);
+                            part.hits -= d;
+                            remaining_dmg -= d;
+                        }
+                        *hits = body.iter().map(|p| p.hits).sum();
                     }
                 }
                 GameObject::Spawn { id, hits, .. } => {
@@ -992,27 +1017,29 @@ impl RunExecutor {
                 if let Some(spos) = spawn_pos {
                     for obj in &self.state.objects {
                         match obj {
-                            GameObject::Spawn {
-                                owner: o,
-                                energy,
-                                pos,
-                                ..
-                            } if *o == owner
-                                && pos.x.abs_diff(spos.x) <= range
-                                && pos.y.abs_diff(spos.y) <= range =>
-                            {
-                                available_energy += *energy;
-                            }
                             GameObject::Extension {
                                 owner: o,
                                 energy,
                                 pos,
                                 ..
                             } if *o == owner
+                                && *energy > 0
                                 && pos.x.abs_diff(spos.x) <= range
                                 && pos.y.abs_diff(spos.y) <= range =>
                             {
-                                available_energy += *energy;
+                                available_energy += energy;
+                            }
+                            GameObject::Spawn {
+                                owner: o,
+                                energy,
+                                pos,
+                                ..
+                            } if *o == owner
+                                && *energy > 0
+                                && pos.x.abs_diff(spos.x) <= range
+                                && pos.y.abs_diff(spos.y) <= range =>
+                            {
+                                available_energy += energy;
                             }
                             _ => {}
                         }
@@ -1084,7 +1111,7 @@ impl RunExecutor {
                         });
 
                         // Create the new creep with spawning = true (takes 3 ticks per body part, e.g. body_len * 3)
-                        let need_time = (body_len.max(1) * 3);
+                        let need_time = body_len.max(1) * 3;
 
                         let spawn_progress = crate::models::SpawningProgress {
                             creep_id: new_creep_id.clone(),
@@ -1102,15 +1129,21 @@ impl RunExecutor {
                         }
 
                         // Add new creep with spawning: true
+                        let body_part_states: Vec<crate::models::BodyPartState> = decoded_body
+                            .into_iter()
+                            .map(|part| crate::models::BodyPartState { part, hits: 100 })
+                            .collect();
+                        let max_hits = (body_part_states.len() as u32) * 100;
+
                         self.state.objects.push(GameObject::Creep {
                             id: new_creep_id,
                             pos: spos,
-                            hits: (body_len.max(1) * 100),
-                            max_hits: (body_len.max(1) * 100),
+                            hits: max_hits,
+                            max_hits,
                             owner,
                             fatigue: 0,
                             spawning: true,
-                            body: decoded_body,
+                            body: body_part_states,
                             store: HashMap::new(),
                         });
                     }
@@ -1133,7 +1166,58 @@ impl RunExecutor {
     }
 
     fn apply_tick_decay(&mut self) {
-        // 1. Remove destroyed units and structures
+        // 1. Check creeps over capacity (due to disabled CARRY parts) and drop excess resources
+        let mut new_dropped_resources = Vec::new();
+
+        for obj in &mut self.state.objects {
+            if let GameObject::Creep {
+                id: _id, pos, hits, body, store, ..
+            } = obj
+            {
+                if *hits > 0 {
+                    let active_carry_parts = body
+                        .iter()
+                        .filter(|p| p.hits > 0 && p.part == screeps_arena::constants::Part::Carry)
+                        .count() as u32;
+                    let max_capacity = active_carry_parts * 50;
+                    let current_used: u32 = store.values().sum();
+
+                    if current_used > max_capacity {
+                        let mut excess = current_used - max_capacity;
+                        for (res_type, amount) in store.iter_mut() {
+                            if excess == 0 {
+                                break;
+                            }
+                            let drop_amt = (*amount).min(excess);
+                            *amount -= drop_amt;
+                            excess -= drop_amt;
+
+                            let res_type_str = format!("{:?}", res_type);
+                            new_dropped_resources.push(GameObject::Resource {
+                                id: format!("res_{}", self.next_id),
+                                pos: *pos,
+                                amount: drop_amt,
+                                resource_type: res_type_str,
+                            });
+                            self.next_id += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Push dropped excess resources to game objects
+        self.state.objects.extend(new_dropped_resources);
+
+        // Process decay on existing ground Resource objects at ceil(amount / 1000) per tick
+        for obj in &mut self.state.objects {
+            if let GameObject::Resource { amount, .. } = obj {
+                let decay = ((*amount as f64) / 1000.0).ceil() as u32;
+                *amount = amount.saturating_sub(decay);
+            }
+        }
+
+        // Remove destroyed units, structures, and depleted ground resources
         self.state.objects.retain(|o| match o {
             GameObject::Creep { hits, .. } => *hits > 0,
             GameObject::Spawn { hits, .. } => *hits > 0,
@@ -1143,6 +1227,7 @@ impl RunExecutor {
             GameObject::Container { hits, .. } => *hits > 0,
             GameObject::Road { hits, .. } => *hits > 0,
             GameObject::Wall { hits, .. } => *hits > 0,
+            GameObject::Resource { amount, .. } => *amount > 0,
             _ => true,
         });
 
@@ -1153,7 +1238,7 @@ impl RunExecutor {
             if let GameObject::Creep { fatigue, body, .. } = obj {
                 let move_parts = body
                     .iter()
-                    .filter(|&&p| p == screeps_arena::constants::Part::Move)
+                    .filter(|p| p.hits > 0 && p.part == screeps_arena::constants::Part::Move)
                     .count() as u32;
                 let fatigue_reduction = move_parts * 2;
                 *fatigue = fatigue.saturating_sub(fatigue_reduction as u8);
@@ -1281,9 +1366,9 @@ impl RunExecutor {
                     };
                     let mock_body: Vec<screeps_arena::objects::BodyPart> = body
                         .iter()
-                        .map(|&p| screeps_arena::objects::BodyPart {
-                            part: p,
-                            hits: 100,
+                        .map(|p| screeps_arena::objects::BodyPart {
+                            part: p.part,
+                            hits: p.hits,
                         })
                         .collect();
                     Some(screeps_arena::objects::Creep {
@@ -1831,14 +1916,14 @@ mod tests {
         exec.state.objects.push(GameObject::Creep {
             id: "creep1".to_string(),
             pos: Position { x: 10, y: 10 },
-            hits: 100,
-            max_hits: 100,
+            hits: 200,
+            max_hits: 200,
             owner: Owner::Bot1,
             fatigue: 5,
             spawning: false,
             body: vec![
-                screeps_arena::constants::Part::Move,
-                screeps_arena::constants::Part::Move,
+                crate::models::BodyPartState { part: screeps_arena::constants::Part::Move, hits: 100 },
+                crate::models::BodyPartState { part: screeps_arena::constants::Part::Move, hits: 100 },
             ],
             store: HashMap::new(),
         });
@@ -1871,7 +1956,7 @@ mod tests {
             owner: Owner::Bot1,
             fatigue: 0,
             spawning: false,
-            body: vec![screeps_arena::constants::Part::Move],
+            body: vec![crate::models::BodyPartState { part: screeps_arena::constants::Part::Move, hits: 100 }],
             store: HashMap::new(),
         });
         exec.state.objects.push(GameObject::Creep {
@@ -1882,7 +1967,7 @@ mod tests {
             owner: Owner::Bot2,
             fatigue: 0,
             spawning: false,
-            body: vec![screeps_arena::constants::Part::Move],
+            body: vec![crate::models::BodyPartState { part: screeps_arena::constants::Part::Move, hits: 100 }],
             store: HashMap::new(),
         });
 
@@ -1926,7 +2011,7 @@ mod tests {
             owner: Owner::Bot1,
             fatigue: 0,
             spawning: false,
-            body: vec![screeps_arena::constants::Part::Move],
+            body: vec![crate::models::BodyPartState { part: screeps_arena::constants::Part::Move, hits: 100 }],
             store: HashMap::new(),
         });
         exec.state.objects.push(GameObject::Creep {
@@ -1937,7 +2022,7 @@ mod tests {
             owner: Owner::Bot2,
             fatigue: 0,
             spawning: false,
-            body: vec![screeps_arena::constants::Part::Move],
+            body: vec![crate::models::BodyPartState { part: screeps_arena::constants::Part::Move, hits: 100 }],
             store: HashMap::new(),
         });
 
@@ -1980,7 +2065,7 @@ mod tests {
             owner: Owner::Bot1,
             fatigue: 0,
             spawning: false,
-            body: vec![screeps_arena::constants::Part::Move],
+            body: vec![crate::models::BodyPartState { part: screeps_arena::constants::Part::Move, hits: 100 }],
             store: HashMap::new(),
         });
 
@@ -2110,7 +2195,7 @@ mod tests {
             owner: Owner::Bot1,
             fatigue: 0,
             spawning: true,
-            body: vec![screeps_arena::constants::Part::Move],
+            body: vec![crate::models::BodyPartState { part: screeps_arena::constants::Part::Move, hits: 100 }],
             store: HashMap::new(),
         });
 
@@ -2180,13 +2265,13 @@ mod tests {
 
         if let GameObject::Creep { body, .. } = creep {
             assert_eq!(body.len(), 7);
-            assert_eq!(body[0], screeps_arena::constants::Part::Move);
-            assert_eq!(body[1], screeps_arena::constants::Part::Work);
-            assert_eq!(body[2], screeps_arena::constants::Part::Carry);
-            assert_eq!(body[3], screeps_arena::constants::Part::Attack);
-            assert_eq!(body[4], screeps_arena::constants::Part::RangedAttack);
-            assert_eq!(body[5], screeps_arena::constants::Part::Tough);
-            assert_eq!(body[6], screeps_arena::constants::Part::Heal);
+            assert_eq!(body[0].part, screeps_arena::constants::Part::Move);
+            assert_eq!(body[1].part, screeps_arena::constants::Part::Work);
+            assert_eq!(body[2].part, screeps_arena::constants::Part::Carry);
+            assert_eq!(body[3].part, screeps_arena::constants::Part::Attack);
+            assert_eq!(body[4].part, screeps_arena::constants::Part::RangedAttack);
+            assert_eq!(body[5].part, screeps_arena::constants::Part::Tough);
+            assert_eq!(body[6].part, screeps_arena::constants::Part::Heal);
         } else {
             panic!("Expected GameObject::Creep");
         }
@@ -2202,12 +2287,15 @@ mod tests {
         exec.state.objects.push(GameObject::Creep {
             id: "creep1".to_string(),
             pos: creep_pos,
-            hits: 100,
-            max_hits: 100,
+            hits: 200,
+            max_hits: 200,
             owner: Owner::Bot1,
             fatigue: 0,
             spawning: false,
-            body: vec![screeps_arena::constants::Part::Work, screeps_arena::constants::Part::Carry],
+            body: vec![
+                crate::models::BodyPartState { part: screeps_arena::constants::Part::Work, hits: 100 },
+                crate::models::BodyPartState { part: screeps_arena::constants::Part::Carry, hits: 100 },
+            ],
             store: HashMap::new(),
         });
 
@@ -2261,6 +2349,100 @@ mod tests {
             assert_eq!(*store.get(&screeps_arena::constants::ResourceType::Energy).unwrap_or(&0), 2);
         } else {
             panic!("Expected Creep");
+        }
+    }
+
+    #[test]
+    fn test_part_damage_capacity_drop_and_resource_decay() {
+        let mut exec = create_test_executor();
+        let creep_pos = Position { x: 10, y: 10 };
+
+        // Creep with CARRY (index 0) + MOVE (index 1) parts, holding 50 energy
+        let mut store = HashMap::new();
+        store.insert(screeps_arena::constants::ResourceType::Energy, 50);
+
+        exec.state.objects.push(GameObject::Creep {
+            id: "creep1".to_string(),
+            pos: creep_pos,
+            hits: 200,
+            max_hits: 200,
+            owner: Owner::Bot1,
+            fatigue: 0,
+            spawning: false,
+            body: vec![
+                crate::models::BodyPartState { part: screeps_arena::constants::Part::Carry, hits: 100 },
+                crate::models::BodyPartState { part: screeps_arena::constants::Part::Move, hits: 100 },
+            ],
+            store,
+        });
+
+        // Add enemy creep with 1 ATTACK part to inflict 30 damage, or queue attack directly
+        exec.state.objects.push(GameObject::Creep {
+            id: "enemy".to_string(),
+            pos: Position { x: 10, y: 11 },
+            hits: 100,
+            max_hits: 100,
+            owner: Owner::Bot2,
+            fatigue: 0,
+            spawning: false,
+            body: vec![crate::models::BodyPartState { part: screeps_arena::constants::Part::Attack, hits: 100 }],
+            store: HashMap::new(),
+        });
+
+        // 1. Directly apply 100 damage to test part damage distribution (disables index 0 CARRY part with 100 HP)
+        for obj in &mut exec.state.objects {
+            if let GameObject::Creep { id, hits, body, .. } = obj {
+                if id == "creep1" {
+                    let mut remaining_dmg = 100;
+                    for part in body.iter_mut() {
+                        if remaining_dmg == 0 {
+                            break;
+                        }
+                        let d = part.hits.min(remaining_dmg);
+                        part.hits -= d;
+                        remaining_dmg -= d;
+                    }
+                    *hits = body.iter().map(|p| p.hits).sum();
+                }
+            }
+        }
+
+        // Verify index 0 CARRY part is disabled (hits = 0) and total hits is 100
+        let creep = exec.state.objects.iter().find(|o| match o {
+            GameObject::Creep { id, .. } => id == "creep1",
+            _ => false,
+        }).unwrap();
+
+        if let GameObject::Creep { body, hits, .. } = creep {
+            assert_eq!(*hits, 100);
+            assert_eq!(body[0].hits, 0); // Index 0 CARRY part disabled first
+            assert_eq!(body[1].hits, 100);
+        } else {
+            panic!("Expected Creep");
+        }
+
+        // 2. Apply tick decay: Creep loses carry capacity (0 active CARRY parts), drops 50 energy on ground, and Resource decays
+        exec.apply_tick_decay();
+
+        // Creep store should now be 0
+        let creep_after = exec.state.objects.iter().find(|o| match o {
+            GameObject::Creep { id, .. } => id == "creep1",
+            _ => false,
+        }).unwrap();
+
+        if let GameObject::Creep { store, .. } = creep_after {
+            assert_eq!(*store.get(&screeps_arena::constants::ResourceType::Energy).unwrap_or(&0), 0);
+        }
+
+        // Ground Resource object created at (10, 10) with 50 energy, minus 1 decay (ceil(50/1000) = 1) -> 49 energy
+        let resource = exec.state.objects.iter().find(|o| match o {
+            GameObject::Resource { .. } => true,
+            _ => false,
+        }).expect("Dropped Resource not found");
+
+        if let GameObject::Resource { pos, amount, .. } = resource {
+            assert_eq!(*pos, creep_pos);
+            assert_eq!(*amount, 49);
         }
     }
 }

@@ -20,6 +20,12 @@ pub struct SpawningProgress {
     pub remaining_time: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BodyPartState {
+    pub part: screeps_arena::constants::Part,
+    pub hits: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GameObject {
     Creep {
@@ -30,7 +36,7 @@ pub enum GameObject {
         owner: Owner,
         fatigue: u8,
         spawning: bool,
-        body: Vec<screeps_arena::constants::Part>,
+        body: Vec<BodyPartState>,
         store: std::collections::HashMap<screeps_arena::constants::ResourceType, u32>,
     },
     Spawn {
