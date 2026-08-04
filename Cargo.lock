@@ -295,6 +295,7 @@ dependencies = [
  "arrayvec",
  "enum-iterator",
  "js-sys",
+ "log",
  "serde",
  "serde-wasm-bindgen",
  "wasm-bindgen",

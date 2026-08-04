@@ -296,6 +296,10 @@ impl BotDriver {
             cmd
         };
 
+        if let Ok(rust_log) = std::env::var("RUST_LOG") {
+            command.env("RUST_LOG", rust_log);
+        }
+
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -450,6 +454,7 @@ fn bincode_read<T: serde::de::DeserializeOwned, R: Read>(mut reader: R) -> Resul
 
 /// Worker mode entrypoint executed by child processes (`screeps_arena_sim bot-runner <bot_path> <fd> [--pause]`)
 pub fn run_bot_runner_process(bot_path: &str, socket_fd: i32, pause: bool) -> Result<()> {
+    let _ = env_logger::try_init();
     let stream = unsafe { UnixStream::from_raw_fd(socket_fd) };
 
     let lib = unsafe { Library::new(bot_path).context("Failed to load bot library in worker")? };
