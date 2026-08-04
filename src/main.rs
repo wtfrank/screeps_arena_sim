@@ -59,9 +59,9 @@ enum Commands {
         /// Optional layout ID or layout alias to use instead of random selection
         #[arg(short, long)]
         layout: Option<String>,
-        /// Maximum ticks to simulate
-        #[arg(short, long, default_value_t = 1000)]
-        ticks: u32,
+        /// Maximum ticks to simulate [default: 2000 for basic, 10000 for advanced]
+        #[arg(short, long, long = "max-ticks", alias = "ticks")]
+        max_ticks: Option<u32>,
         /// Launch GDB terminal wrapper for debugging a specific bot (1, 2, or "all")
         #[arg(long)]
         debug_bot: Option<String>,
@@ -363,7 +363,7 @@ fn main() -> Result<()> {
             bot1,
             bot2,
             layout,
-            ticks,
+            max_ticks,
             debug_bot,
         } => {
             let lib = bot_library::BotLibrary::load(&library_path)?;
@@ -430,8 +430,17 @@ fn main() -> Result<()> {
                 100,
                 100,
             )?;
+            let is_advanced = bot_library::get_known_arenas()
+                .iter()
+                .find(|a| a.arena_id == arena_id)
+                .map(|a| a.advanced)
+                .unwrap_or_else(|| arena_id.contains("advanced"));
+
+            let default_ticks = if is_advanced { 10000 } else { 2000 };
+            let tick_limit = max_ticks.unwrap_or(default_ticks);
+
             let rules = Ruleset {
-                tick_limit: ticks,
+                tick_limit,
                 cpu_time_limit: 1000,
                 win_condition: WinCondition::DestroyEnemySpawn,
             };
