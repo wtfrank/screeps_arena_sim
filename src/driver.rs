@@ -39,6 +39,7 @@ struct BotExecutionContext {
     pub area_effect_cache: Vec<screeps_arena::objects::AreaEffect>,
     pub construction_site_cache: Vec<screeps_arena::objects::ConstructionSite>,
     pub owned_structure_cache: Vec<screeps_arena::objects::OwnedStructure>,
+    pub terrain_cache: Vec<Vec<crate::models::Terrain>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -60,12 +61,31 @@ extern "C" fn get_cpu_time_callback() -> u32 {
     0
 }
 
-extern "C" fn get_terrain_at_callback(_x: u8, _y: u8) -> u32 {
-    // Default to Plain (0) for now. The full executor will wire this up to the actual terrain grid.
-    0
+extern "C" fn get_terrain_at_callback(x: u8, y: u8) -> u32 {
+    CURRENT_BOT_CONTEXT.with(|ctx| {
+        if let Some(ref c) = *ctx.borrow() {
+            let xu = x as usize;
+            let yu = y as usize;
+            if xu < c.terrain_cache.len() && yu < c.terrain_cache[xu].len() {
+                match c.terrain_cache[xu][yu] {
+                    crate::models::Terrain::Wall => 1,
+                    crate::models::Terrain::Swamp => 2,
+                    crate::models::Terrain::Plain => 0,
+                }
+            } else {
+                0
+            }
+        } else {
+            0
+        }
+    })
 }
 
-extern "C" fn get_objects_callback(proto_id: u32, out_ptr: *mut *const c_void, out_len: *mut usize) {
+extern "C" fn get_objects_callback(
+    proto_id: u32,
+    out_ptr: *mut *const c_void,
+    out_len: *mut usize,
+) {
     CURRENT_BOT_CONTEXT.with(|ctx| {
         if let Some(ref c) = *ctx.borrow() {
             unsafe {
@@ -218,6 +238,7 @@ pub struct BotTickMessage {
     pub area_effects: Vec<screeps_arena::objects::AreaEffect>,
     pub construction_sites: Vec<screeps_arena::objects::ConstructionSite>,
     pub owned_structures: Vec<screeps_arena::objects::OwnedStructure>,
+    pub terrain: Vec<Vec<crate::models::Terrain>>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -509,6 +530,7 @@ pub fn run_bot_runner_process(bot_path: &str, socket_fd: i32, pause: bool) -> Re
                     area_effect_cache: tick_msg.area_effects,
                     construction_site_cache: tick_msg.construction_sites,
                     owned_structure_cache: tick_msg.owned_structures,
+                    terrain_cache: tick_msg.terrain,
                 };
 
                 CURRENT_BOT_CONTEXT.with(|ctx| {

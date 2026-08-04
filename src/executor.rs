@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use log::debug;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -59,13 +60,22 @@ impl RunExecutor {
 
         // Assign initial next_id to each spawn, and set fixed starting energy for spawns and extensions.
         for obj in &mut initial_state.objects {
-            if let GameObject::Spawn { next_id: nid, energy, max_energy, .. } = obj {
+            if let GameObject::Spawn {
+                next_id: nid,
+                energy,
+                max_energy,
+                ..
+            } = obj
+            {
                 *nid = next_id.to_string();
                 next_id += 1;
                 *energy = 500;
                 *max_energy = 1000;
             }
-            if let GameObject::Extension { energy, max_energy, .. } = obj {
+            if let GameObject::Extension {
+                energy, max_energy, ..
+            } = obj
+            {
                 *energy = 100;
                 *max_energy = 100;
             }
@@ -193,6 +203,7 @@ impl RunExecutor {
                             area_effects: bot1_area_effects,
                             construction_sites: bot1_construction_sites,
                             owned_structures: bot1_owned_structures,
+                            terrain: self.state.terrain.clone(),
                         };
                         d1.tick(msg, timeout_b1)
                     } else {
@@ -224,6 +235,7 @@ impl RunExecutor {
                             area_effects: bot2_area_effects,
                             construction_sites: bot2_construction_sites,
                             owned_structures: bot2_owned_structures,
+                            terrain: self.state.terrain.clone(),
                         };
                         d2.tick(msg, timeout_b2)
                     } else {
@@ -438,9 +450,19 @@ impl RunExecutor {
                 // Verify inside arena bounds and not moving into a Wall
                 if target_pos.x < self.state.width && target_pos.y < self.state.height {
                     let terrain = self.state.terrain[target_pos.x as usize][target_pos.y as usize];
-                    if terrain != Terrain::Wall {
+                    if terrain == Terrain::Wall {
+                        debug!(
+                            "[executor] creep {} move rejected (terrain wall at {:?})",
+                            id, target_pos
+                        );
+                    } else {
                         move_intents.insert(id.clone(), target_pos);
                     }
+                } else {
+                    debug!(
+                        "[executor] creep {} move rejected (out of bounds {:?})",
+                        id, target_pos
+                    );
                 }
             }
         }
@@ -487,6 +509,10 @@ impl RunExecutor {
             for (creep_id, target_pos) in current_intents {
                 // Reject if multiple creeps contend for the same destination tile
                 if target_counts.get(&target_pos).cloned().unwrap_or(0) > 1 {
+                    debug!(
+                        "[executor] creep {} move rejected (contested tile {:?})",
+                        creep_id, target_pos
+                    );
                     move_intents.remove(&creep_id);
                     if let Some(&start) = current_positions.get(&creep_id) {
                         blocked_tiles.insert(start);
@@ -497,6 +523,10 @@ impl RunExecutor {
 
                 // Check if target position is blocked by a static obstacle
                 if blocked_tiles.contains(&target_pos) {
+                    debug!(
+                        "[executor] creep {} move rejected (blocked tile {:?})",
+                        creep_id, target_pos
+                    );
                     move_intents.remove(&creep_id);
                     if let Some(&start) = current_positions.get(&creep_id) {
                         blocked_tiles.insert(start);
@@ -533,6 +563,17 @@ impl RunExecutor {
                                 approved_moves.insert(creep_id, target_pos);
                                 resolved = true;
                             }
+                        } else {
+                            // Occupant creep at target_pos does not intend to move -> target is blocked!
+                            debug!(
+                                "[executor] creep {} move rejected (stationary creep {} at {:?})",
+                                creep_id, other_id, target_pos
+                            );
+                            move_intents.remove(&creep_id);
+                            if let Some(&start) = current_positions.get(&creep_id) {
+                                blocked_tiles.insert(start);
+                            }
+                            resolved = true;
                         }
                     }
                 }
@@ -551,6 +592,10 @@ impl RunExecutor {
             } = obj
             {
                 if let Some(&new_pos) = approved_moves.get(id) {
+                    debug!(
+                        "[executor] creep {} approved move: {:?} -> {:?}",
+                        id, pos, new_pos
+                    );
                     *pos = new_pos;
                     let move_parts = body
                         .iter()
@@ -634,7 +679,11 @@ impl RunExecutor {
 
                 for obj in &self.state.objects {
                     if let GameObject::Spawn {
-                        id, owner: o, pos, spawning, ..
+                        id,
+                        owner: o,
+                        pos,
+                        spawning,
+                        ..
                     } = obj
                     {
                         if id == spawn_id && *o == owner && spawning.is_none() {
@@ -788,6 +837,18 @@ impl RunExecutor {
     }
 
     fn apply_tick_decay(&mut self) {
+        // Remove destroyed units and structures
+        self.state.objects.retain(|o| match o {
+            GameObject::Creep { hits, .. } => *hits > 0,
+            GameObject::Spawn { hits, .. } => *hits > 0,
+            GameObject::Tower { hits, .. } => *hits > 0,
+            GameObject::Extension { hits, .. } => *hits > 0,
+            GameObject::Rampart { hits, .. } => *hits > 0,
+            GameObject::Container { hits, .. } => *hits > 0,
+            GameObject::Road { hits, .. } => *hits > 0,
+            GameObject::Wall { hits, .. } => *hits > 0,
+            _ => true,
+        });
         let mut completed_creep_ids = Vec::new();
 
         for obj in &mut self.state.objects {
@@ -821,9 +882,18 @@ impl RunExecutor {
                     let nx = spawn_pos.x as i32 + dx;
                     let ny = spawn_pos.y as i32 + dy;
 
-                    if nx >= 0 && nx < self.state.width as i32 && ny >= 0 && ny < self.state.height as i32 {
-                        let candidate = Position { x: nx as u8, y: ny as u8 };
-                        if self.state.terrain[candidate.x as usize][candidate.y as usize] == Terrain::Wall {
+                    if nx >= 0
+                        && nx < self.state.width as i32
+                        && ny >= 0
+                        && ny < self.state.height as i32
+                    {
+                        let candidate = Position {
+                            x: nx as u8,
+                            y: ny as u8,
+                        };
+                        if self.state.terrain[candidate.x as usize][candidate.y as usize]
+                            == Terrain::Wall
+                        {
                             continue;
                         }
 
@@ -850,7 +920,10 @@ impl RunExecutor {
 
             if let Some(new_pos) = free_spot {
                 for obj in &mut self.state.objects {
-                    if let GameObject::Creep { id, pos, spawning, .. } = obj {
+                    if let GameObject::Creep {
+                        id, pos, spawning, ..
+                    } = obj
+                    {
                         if id == &creep_id {
                             *pos = new_pos;
                             *spawning = false;
@@ -874,7 +947,10 @@ impl RunExecutor {
         }
         // Regenerate 1 energy per tick on each spawn, up to max_energy.
         for obj in &mut self.state.objects {
-            if let GameObject::Spawn { energy, max_energy, .. } = obj {
+            if let GameObject::Spawn {
+                energy, max_energy, ..
+            } = obj
+            {
                 *energy = (*energy + 1).min(*max_energy);
             }
         }
@@ -1336,7 +1412,10 @@ impl RunExecutor {
             .collect()
     }
 
-    fn get_mock_owned_structures(&self, is_bot1: bool) -> Vec<screeps_arena::objects::OwnedStructure> {
+    fn get_mock_owned_structures(
+        &self,
+        is_bot1: bool,
+    ) -> Vec<screeps_arena::objects::OwnedStructure> {
         let mut result = Vec::new();
 
         for obj in &self.state.objects {
@@ -1344,7 +1423,11 @@ impl RunExecutor {
                 GameObject::Spawn { id, pos, owner, .. }
                 | GameObject::Tower { id, pos, owner, .. }
                 | GameObject::Extension { id, pos, owner, .. } => {
-                    let my = if is_bot1 { *owner == Owner::Bot1 } else { *owner == Owner::Bot2 };
+                    let my = if is_bot1 {
+                        *owner == Owner::Bot1
+                    } else {
+                        *owner == Owner::Bot2
+                    };
                     result.push(screeps_arena::objects::OwnedStructure {
                         base: screeps_arena::objects::Structure {
                             base: screeps_arena::objects::GameObject {
@@ -1444,7 +1527,10 @@ mod tests {
             owner: Owner::Bot1,
             fatigue: 5,
             spawning: false,
-            body: vec![screeps_arena::constants::Part::Move, screeps_arena::constants::Part::Move],
+            body: vec![
+                screeps_arena::constants::Part::Move,
+                screeps_arena::constants::Part::Move,
+            ],
             store: HashMap::new(),
         });
 
@@ -1633,7 +1719,10 @@ mod tests {
         exec.resolve_actions(actions1.clone(), Vec::new());
 
         // Spawn energy should be deducted (300 -> 100) and spawning state set
-        if let GameObject::Spawn { energy, spawning, .. } = &exec.state.objects[0] {
+        if let GameObject::Spawn {
+            energy, spawning, ..
+        } = &exec.state.objects[0]
+        {
             assert_eq!(*energy, 100);
             assert!(spawning.is_some());
         } else {
@@ -1645,5 +1734,43 @@ mod tests {
         if let GameObject::Spawn { energy, .. } = &exec.state.objects[0] {
             assert_eq!(*energy, 100); // Energy unchanged
         }
+    }
+
+    #[test]
+    fn test_spawn_energy_tick_regeneration() {
+        let mut exec = create_test_executor();
+        exec.state.objects.push(GameObject::Spawn {
+            id: "spawn1".to_string(),
+            pos: Position { x: 10, y: 10 },
+            hits: 5000,
+            max_hits: 5000,
+            owner: Owner::Bot1,
+            energy: 400,
+            max_energy: 1000,
+            spawning: None,
+            next_id: "creep1".to_string(),
+        });
+
+        exec.apply_tick_decay();
+        if let GameObject::Spawn { energy, .. } = &exec.state.objects[0] {
+            assert_eq!(*energy, 401);
+        } else {
+            panic!("Expected spawn");
+        }
+    }
+
+    #[test]
+    fn test_destroyed_rampart_removal() {
+        let mut exec = create_test_executor();
+        exec.state.objects.push(GameObject::Rampart {
+            id: "rampart1".to_string(),
+            pos: Position { x: 5, y: 5 },
+            hits: 0,
+            max_hits: 1000,
+            owner: Owner::Bot1,
+        });
+
+        exec.apply_tick_decay();
+        assert!(exec.state.objects.is_empty());
     }
 }
