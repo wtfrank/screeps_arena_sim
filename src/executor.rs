@@ -627,9 +627,288 @@ impl RunExecutor {
             }
         }
 
+        // Filter creep actions according to action priority pipeline chains per tick per creep:
+        // Chain 1: Harvest -> Attack -> Build -> Repair -> RangedHeal -> Heal
+        // Chain 2: RangedAttack -> RangedMassAttack -> Build -> RangedHeal
+        // Chain 3: Build -> Withdraw -> Transfer -> Drop
+        let chain1_order = [
+            ActionId::Harvest,
+            ActionId::Attack,
+            ActionId::Build,
+            ActionId::RangedHeal,
+            ActionId::Heal,
+        ];
+        let chain2_order = [
+            ActionId::RangedAttack,
+            ActionId::RangedMassAttack,
+            ActionId::Build,
+            ActionId::RangedHeal,
+        ];
+        let chain3_order = [
+            ActionId::Build,
+            ActionId::Withdraw,
+            ActionId::Transfer,
+        ];
+
+        // Group actions by actor_id and sort each creep's actions by chain rank index
+        let mut actions_by_actor: std::collections::HashMap<String, Vec<&QueuedAction>> = std::collections::HashMap::new();
+        for act in actions1.iter().chain(actions2.iter()) {
+            actions_by_actor.entry(act.actor_id.clone()).or_default().push(act);
+        }
+
+        let mut valid_actions = Vec::new();
+
+        for (_actor, mut actor_actions) in actions_by_actor {
+            // Sort actions for this creep by their highest priority rank in any applicable chain
+            actor_actions.sort_by_key(|act| {
+                let r1 = chain1_order.iter().position(|&a| a == act.action).unwrap_or(usize::MAX);
+                let r2 = chain2_order.iter().position(|&a| a == act.action).unwrap_or(usize::MAX);
+                let r3 = chain3_order.iter().position(|&a| a == act.action).unwrap_or(usize::MAX);
+                r1.min(r2).min(r3)
+            });
+
+            let mut chain1_used = false;
+            let mut chain2_used = false;
+            let mut chain3_used = false;
+
+            for act in actor_actions {
+                let in_chain1 = chain1_order.contains(&act.action);
+                let in_chain2 = chain2_order.contains(&act.action);
+                let in_chain3 = chain3_order.contains(&act.action);
+
+                if in_chain1 && chain1_used {
+                    continue;
+                }
+                if in_chain2 && chain2_used {
+                    continue;
+                }
+                if in_chain3 && chain3_used {
+                    continue;
+                }
+
+                if in_chain1 {
+                    chain1_used = true;
+                }
+                if in_chain2 {
+                    chain2_used = true;
+                }
+                if in_chain3 {
+                    chain3_used = true;
+                }
+
+                valid_actions.push(act);
+            }
+        }
+
+        // Resolve Harvest, Transfer, and Withdraw actions
+        for act in &valid_actions {
+            match act.action {
+                ActionId::Harvest => {
+                    let creep_id = &act.actor_id;
+                    let target_id = act.target_id.as_deref();
+
+                    let mut harvest_pos = None;
+                    let mut harvest_power = 0;
+                    let mut creep_carry_avail = 0;
+
+                    for obj in &self.state.objects {
+                        if let GameObject::Creep {
+                            id, pos, body, store, fatigue, spawning, ..
+                        } = obj
+                        {
+                            if id == creep_id && *fatigue == 0 && !*spawning {
+                                harvest_pos = Some(*pos);
+                                let work_parts = body
+                                    .iter()
+                                    .filter(|&&p| p == screeps_arena::constants::Part::Work)
+                                    .count() as u32;
+                                harvest_power = work_parts * 2;
+
+                                let carry_parts = body
+                                    .iter()
+                                    .filter(|&&p| p == screeps_arena::constants::Part::Carry)
+                                    .count() as u32;
+                                let max_capacity = carry_parts * 50;
+                                let current_used: u32 = store.values().sum();
+                                creep_carry_avail = max_capacity.saturating_sub(current_used);
+                                break;
+                            }
+                        }
+                    }
+
+                    if let (Some(cpos), Some(tid)) = (harvest_pos, target_id) {
+                        let mut harvested_amount = 0;
+                        for obj in &mut self.state.objects {
+                            if let GameObject::Source { id, pos, energy, .. } = obj {
+                                if id == tid && pos.x.abs_diff(cpos.x) <= 1 && pos.y.abs_diff(cpos.y) <= 1 {
+                                    harvested_amount = (*energy).min(harvest_power).min(creep_carry_avail);
+                                    *energy -= harvested_amount;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if harvested_amount > 0 {
+                            for obj in &mut self.state.objects {
+                                if let GameObject::Creep { id, store, .. } = obj {
+                                    if id == creep_id {
+                                        *store.entry(screeps_arena::constants::ResourceType::Energy).or_insert(0) += harvested_amount;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                ActionId::Transfer => {
+                    let creep_id = &act.actor_id;
+                    let target_id = act.target_id.as_deref();
+                    let req_amount = if act.arg2 > 0 { act.arg2 as u32 } else { u32::MAX };
+
+                    let mut creep_pos = None;
+                    let mut creep_energy = 0;
+
+                    for obj in &self.state.objects {
+                        if let GameObject::Creep {
+                            id, pos, store, fatigue, spawning, ..
+                        } = obj
+                        {
+                            if id == creep_id && *fatigue == 0 && !*spawning {
+                                creep_pos = Some(*pos);
+                                creep_energy = *store.get(&screeps_arena::constants::ResourceType::Energy).unwrap_or(&0);
+                                break;
+                            }
+                        }
+                    }
+
+                    if let (Some(cpos), Some(tid)) = (creep_pos, target_id) {
+                        let mut transferred = 0;
+                        for obj in &mut self.state.objects {
+                            match obj {
+                                GameObject::Spawn { id, pos, energy, max_energy, .. } if id == tid => {
+                                    if pos.x.abs_diff(cpos.x) <= 1 && pos.y.abs_diff(cpos.y) <= 1 {
+                                        let space = max_energy.saturating_sub(*energy);
+                                        transferred = creep_energy.min(req_amount).min(space);
+                                        *energy += transferred;
+                                    }
+                                }
+                                GameObject::Extension { id, pos, energy, max_energy, .. } if id == tid => {
+                                    if pos.x.abs_diff(cpos.x) <= 1 && pos.y.abs_diff(cpos.y) <= 1 {
+                                        let space = max_energy.saturating_sub(*energy);
+                                        transferred = creep_energy.min(req_amount).min(space);
+                                        *energy += transferred;
+                                    }
+                                }
+                                GameObject::Tower { id, pos, energy, max_energy, .. } if id == tid => {
+                                    if pos.x.abs_diff(cpos.x) <= 1 && pos.y.abs_diff(cpos.y) <= 1 {
+                                        let space = max_energy.saturating_sub(*energy);
+                                        transferred = creep_energy.min(req_amount).min(space);
+                                        *energy += transferred;
+                                    }
+                                }
+                                GameObject::Container { id, pos, energy, max_energy, .. } if id == tid => {
+                                    if pos.x.abs_diff(cpos.x) <= 1 && pos.y.abs_diff(cpos.y) <= 1 {
+                                        let space = max_energy.saturating_sub(*energy);
+                                        transferred = creep_energy.min(req_amount).min(space);
+                                        *energy += transferred;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        if transferred > 0 {
+                            for obj in &mut self.state.objects {
+                                if let GameObject::Creep { id, store, .. } = obj {
+                                    if id == creep_id {
+                                        if let Some(e) = store.get_mut(&screeps_arena::constants::ResourceType::Energy) {
+                                            *e -= transferred;
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                ActionId::Withdraw => {
+                    let creep_id = &act.actor_id;
+                    let target_id = act.target_id.as_deref();
+                    let req_amount = if act.arg2 > 0 { act.arg2 as u32 } else { u32::MAX };
+
+                    let mut creep_pos = None;
+                    let mut creep_carry_avail = 0;
+
+                    for obj in &self.state.objects {
+                        if let GameObject::Creep {
+                            id, pos, body, store, fatigue, spawning, ..
+                        } = obj
+                        {
+                            if id == creep_id && *fatigue == 0 && !*spawning {
+                                creep_pos = Some(*pos);
+                                let carry_parts = body
+                                    .iter()
+                                    .filter(|&&p| p == screeps_arena::constants::Part::Carry)
+                                    .count() as u32;
+                                let max_capacity = carry_parts * 50;
+                                let current_used: u32 = store.values().sum();
+                                creep_carry_avail = max_capacity.saturating_sub(current_used);
+                                break;
+                            }
+                        }
+                    }
+
+                    if let (Some(cpos), Some(tid)) = (creep_pos, target_id) {
+                        let mut withdrawn = 0;
+                        for obj in &mut self.state.objects {
+                            match obj {
+                                GameObject::Spawn { id, pos, energy, .. } if id == tid => {
+                                    if pos.x.abs_diff(cpos.x) <= 1 && pos.y.abs_diff(cpos.y) <= 1 {
+                                        withdrawn = (*energy).min(req_amount).min(creep_carry_avail);
+                                        *energy -= withdrawn;
+                                    }
+                                }
+                                GameObject::Extension { id, pos, energy, .. } if id == tid => {
+                                    if pos.x.abs_diff(cpos.x) <= 1 && pos.y.abs_diff(cpos.y) <= 1 {
+                                        withdrawn = (*energy).min(req_amount).min(creep_carry_avail);
+                                        *energy -= withdrawn;
+                                    }
+                                }
+                                GameObject::Tower { id, pos, energy, .. } if id == tid => {
+                                    if pos.x.abs_diff(cpos.x) <= 1 && pos.y.abs_diff(cpos.y) <= 1 {
+                                        withdrawn = (*energy).min(req_amount).min(creep_carry_avail);
+                                        *energy -= withdrawn;
+                                    }
+                                }
+                                GameObject::Container { id, pos, energy, .. } if id == tid => {
+                                    if pos.x.abs_diff(cpos.x) <= 1 && pos.y.abs_diff(cpos.y) <= 1 {
+                                        withdrawn = (*energy).min(req_amount).min(creep_carry_avail);
+                                        *energy -= withdrawn;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        if withdrawn > 0 {
+                            for obj in &mut self.state.objects {
+                                if let GameObject::Creep { id, store, .. } = obj {
+                                    if id == creep_id {
+                                        *store.entry(screeps_arena::constants::ResourceType::Energy).or_insert(0) += withdrawn;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
         // Resolve attacks (towers & creeps)
         let mut damage_map = HashMap::new();
-        for act in actions1.iter().chain(actions2.iter()) {
+        for act in &valid_actions {
             if act.action == ActionId::Attack {
                 if let Some(ref target) = act.target_id {
                     *damage_map.entry(target.clone()).or_insert(0) += 30; // standard creep attack
@@ -1910,6 +2189,78 @@ mod tests {
             assert_eq!(body[6], screeps_arena::constants::Part::Heal);
         } else {
             panic!("Expected GameObject::Creep");
+        }
+    }
+
+    #[test]
+    fn test_creep_action_pipeline_chains_and_resource_actions() {
+        let mut exec = create_test_executor();
+        let creep_pos = Position { x: 10, y: 10 };
+        let source_pos = Position { x: 10, y: 11 };
+
+        // Creep with WORK & CARRY parts at (10, 10)
+        exec.state.objects.push(GameObject::Creep {
+            id: "creep1".to_string(),
+            pos: creep_pos,
+            hits: 100,
+            max_hits: 100,
+            owner: Owner::Bot1,
+            fatigue: 0,
+            spawning: false,
+            body: vec![screeps_arena::constants::Part::Work, screeps_arena::constants::Part::Carry],
+            store: HashMap::new(),
+        });
+
+        // Source at (10, 11) with 1000 energy
+        exec.state.objects.push(GameObject::Source {
+            id: "source1".to_string(),
+            pos: source_pos,
+            energy: 1000,
+            max_energy: 1000,
+        });
+
+        // Queue both Harvest and Attack for creep1 (Harvest comes first in Chain 1, so Attack must be filtered out)
+        let actions1 = vec![
+            QueuedAction {
+                actor_id: "creep1".to_string(),
+                action: ActionId::Harvest,
+                target_id: Some("source1".to_string()),
+                arg1: 0,
+                arg2: 0,
+            },
+            QueuedAction {
+                actor_id: "creep1".to_string(),
+                action: ActionId::Attack,
+                target_id: Some("source1".to_string()),
+                arg1: 0,
+                arg2: 0,
+            },
+        ];
+
+        exec.resolve_actions(actions1, Vec::new());
+
+        // Source energy should be reduced by 2 (1 WORK part * 2) -> 998
+        // Creep energy store should receive 2
+        let source = exec.state.objects.iter().find(|o| match o {
+            GameObject::Source { id, .. } => id == "source1",
+            _ => false,
+        }).unwrap();
+
+        if let GameObject::Source { energy, .. } = source {
+            assert_eq!(*energy, 998);
+        } else {
+            panic!("Expected Source");
+        }
+
+        let creep = exec.state.objects.iter().find(|o| match o {
+            GameObject::Creep { id, .. } => id == "creep1",
+            _ => false,
+        }).unwrap();
+
+        if let GameObject::Creep { store, .. } = creep {
+            assert_eq!(*store.get(&screeps_arena::constants::ResourceType::Energy).unwrap_or(&0), 2);
+        } else {
+            panic!("Expected Creep");
         }
     }
 }
