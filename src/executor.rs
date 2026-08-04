@@ -669,8 +669,25 @@ impl RunExecutor {
                 let spawn_id = &act.actor_id;
                 let body_len = act.arg1 as u32;
 
-                // Calculate energy cost (assuming standard 100 energy per body part if default or decode from arg2)
-                let energy_cost = if body_len > 0 { body_len * 100 } else { 200 };
+                // Decode body parts from act.arg2 (nibble packed 4-bit enum values)
+                let mut decoded_body = Vec::new();
+                for i in 0..body_len.min(16) {
+                    let val = ((act.arg2 >> (i * 4)) & 0xF) as u8;
+                    let part = match val {
+                        1 => screeps_arena::constants::Part::Move,
+                        2 => screeps_arena::constants::Part::Work,
+                        3 => screeps_arena::constants::Part::Carry,
+                        4 => screeps_arena::constants::Part::Attack,
+                        5 => screeps_arena::constants::Part::RangedAttack,
+                        6 => screeps_arena::constants::Part::Tough,
+                        7 => screeps_arena::constants::Part::Heal,
+                        _ => screeps_arena::constants::Part::Move,
+                    };
+                    decoded_body.push(part);
+                }
+
+                // Calculate energy cost strictly from decoded body parts
+                let energy_cost: u32 = decoded_body.iter().map(|p| p.cost()).sum();
 
                 // Verify spawn ownership and presence, checking energy within SPAWN_RANGE
                 let mut spawn_pos = None;
@@ -814,7 +831,7 @@ impl RunExecutor {
                             owner,
                             fatigue: 0,
                             spawning: true,
-                            body: Vec::new(),
+                            body: decoded_body,
                             store: HashMap::new(),
                         });
                     }
@@ -837,7 +854,7 @@ impl RunExecutor {
     }
 
     fn apply_tick_decay(&mut self) {
-        // Remove destroyed units and structures
+        // 1. Remove destroyed units and structures
         self.state.objects.retain(|o| match o {
             GameObject::Creep { hits, .. } => *hits > 0,
             GameObject::Spawn { hits, .. } => *hits > 0,
@@ -849,28 +866,43 @@ impl RunExecutor {
             GameObject::Wall { hits, .. } => *hits > 0,
             _ => true,
         });
-        let mut completed_creep_ids = Vec::new();
+
+        // 2. Process fatigue decay and spawning progress & spawn energy regeneration
+        let mut ready_spawns = Vec::new();
 
         for obj in &mut self.state.objects {
             if let GameObject::Creep { fatigue, body, .. } = obj {
                 let move_parts = body
                     .iter()
                     .filter(|&&p| p == screeps_arena::constants::Part::Move)
-                    .count() as u8;
-                let decay = if move_parts > 0 { move_parts * 2 } else { 2 };
-                *fatigue = fatigue.saturating_sub(decay);
-            }
-            if let GameObject::Spawn { pos, spawning, .. } = obj {
+                    .count() as u32;
+                let fatigue_reduction = move_parts * 2;
+                *fatigue = fatigue.saturating_sub(fatigue_reduction as u8);
+            } else if let GameObject::Spawn {
+                id,
+                pos,
+                spawning,
+                energy,
+                max_energy,
+                ..
+            } = obj
+            {
+                if *energy < *max_energy {
+                    *energy += 1;
+                }
                 if let Some(progress) = spawning {
-                    progress.remaining_time = progress.remaining_time.saturating_sub(1);
+                    if progress.remaining_time > 0 {
+                        progress.remaining_time -= 1;
+                    }
                     if progress.remaining_time == 0 {
-                        completed_creep_ids.push((*pos, progress.creep_id.clone()));
-                        *spawning = None;
+                        ready_spawns.push((id.clone(), *pos, progress.creep_id.clone()));
                     }
                 }
             }
         }
-        for (spawn_pos, creep_id) in completed_creep_ids {
+
+        // 3. For creeps finished spawning, attempt placement in an adjacent non-blocked spot before setting spawning = false
+        for (spawn_id, spawn_pos, creep_id) in ready_spawns {
             let mut free_spot = None;
 
             // Search 8 adjacent positions around spawn_pos
@@ -897,9 +929,9 @@ impl RunExecutor {
                             continue;
                         }
 
-                        // Check if tile is occupied by static structure or another creep
+                        // Check if tile is occupied by static structure or another non-spawning creep
                         let occupied = self.state.objects.iter().any(|o| match o {
-                            GameObject::Creep { pos, .. } => *pos == candidate,
+                            GameObject::Creep { pos, spawning, .. } => *pos == candidate && !*spawning,
                             GameObject::Spawn { pos, .. }
                             | GameObject::Tower { pos, .. }
                             | GameObject::Extension { pos, .. }
@@ -919,6 +951,7 @@ impl RunExecutor {
             }
 
             if let Some(new_pos) = free_spot {
+                // Move creep to free adjacent spot and set spawning = false
                 for obj in &mut self.state.objects {
                     if let GameObject::Creep {
                         id, pos, spawning, ..
@@ -930,29 +963,17 @@ impl RunExecutor {
                         }
                     }
                 }
-            } else {
-                // No free adjacent spot available; re-mark spawn as occupied so it retries next tick
+
+                // Clear spawning state from spawn
                 for obj in &mut self.state.objects {
-                    if let GameObject::Spawn { pos, spawning, .. } = obj {
-                        if *pos == spawn_pos {
-                            *spawning = Some(crate::models::SpawningProgress {
-                                creep_id: creep_id.clone(),
-                                need_time: 1,
-                                remaining_time: 1,
-                            });
+                    if let GameObject::Spawn { id, spawning, .. } = obj {
+                        if id == &spawn_id {
+                            *spawning = None;
                         }
                     }
                 }
             }
-        }
-        // Regenerate 1 energy per tick on each spawn, up to max_energy.
-        for obj in &mut self.state.objects {
-            if let GameObject::Spawn {
-                energy, max_energy, ..
-            } = obj
-            {
-                *energy = (*energy + 1).min(*max_energy);
-            }
+            // If no adjacent free spot is available, keep spawning progress remaining_time = 0 & creep spawning = true so placement retries next tick
         }
     }
 
@@ -971,6 +992,7 @@ impl RunExecutor {
                     owner,
                     fatigue,
                     spawning,
+                    body,
                     ..
                 } => {
                     let my = if is_bot1 {
@@ -978,6 +1000,13 @@ impl RunExecutor {
                     } else {
                         *owner == Owner::Bot2
                     };
+                    let mock_body: Vec<screeps_arena::objects::BodyPart> = body
+                        .iter()
+                        .map(|&p| screeps_arena::objects::BodyPart {
+                            part: p,
+                            hits: 100,
+                        })
+                        .collect();
                     Some(screeps_arena::objects::Creep {
                         base: screeps_arena::objects::GameObject {
                             id: id.clone(),
@@ -989,6 +1018,7 @@ impl RunExecutor {
                         fatigue: *fatigue as u32,
                         my,
                         spawning: *spawning,
+                        body: mock_body,
                     })
                 }
                 _ => None,
@@ -1707,13 +1737,13 @@ mod tests {
             next_id: "creep101".to_string(),
         });
 
-        // Spawn 1 creep with 2 body parts (cost 200)
+        // Spawn 1 creep with Move + RangedAttack (encoded 0x51, cost 200)
         let actions1 = vec![QueuedAction {
             actor_id: "spawn1".to_string(),
             action: ActionId::SpawnCreep,
             target_id: None,
             arg1: 2,
-            arg2: 0,
+            arg2: 0x51,
         }];
 
         exec.resolve_actions(actions1.clone(), Vec::new());
@@ -1772,5 +1802,114 @@ mod tests {
 
         exec.apply_tick_decay();
         assert!(exec.state.objects.is_empty());
+    }
+
+    #[test]
+    fn test_spawn_placement_blocked_retry() {
+        let mut exec = create_test_executor();
+        let spawn_pos = Position { x: 10, y: 10 };
+        exec.state.objects.push(GameObject::Spawn {
+            id: "spawn1".to_string(),
+            pos: spawn_pos,
+            hits: 5000,
+            max_hits: 5000,
+            owner: Owner::Bot1,
+            energy: 300,
+            max_energy: 300,
+            spawning: Some(crate::models::SpawningProgress {
+                creep_id: "creep1".to_string(),
+                need_time: 1,
+                remaining_time: 1,
+            }),
+            next_id: "creep2".to_string(),
+        });
+        exec.state.objects.push(GameObject::Creep {
+            id: "creep1".to_string(),
+            pos: spawn_pos,
+            hits: 100,
+            max_hits: 100,
+            owner: Owner::Bot1,
+            fatigue: 0,
+            spawning: true,
+            body: vec![screeps_arena::constants::Part::Move],
+            store: HashMap::new(),
+        });
+
+        // Block all 8 surrounding positions with walls
+        for dx in [-1i32, 0, 1] {
+            for dy in [-1i32, 0, 1] {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                let nx = (spawn_pos.x as i32 + dx) as usize;
+                let ny = (spawn_pos.y as i32 + dy) as usize;
+                exec.state.terrain[nx][ny] = Terrain::Wall;
+            }
+        }
+
+        exec.apply_tick_decay();
+
+        // Since no adjacent tile is unblocked, creep should remain at (10, 10) with spawning = true
+        let creep = exec.state.objects.iter().find(|o| match o {
+            GameObject::Creep { id, .. } => id == "creep1",
+            _ => false,
+        }).unwrap();
+
+        if let GameObject::Creep { pos, spawning, .. } = creep {
+            assert_eq!(*pos, spawn_pos);
+            assert_eq!(*spawning, true);
+        } else {
+            panic!("Expected creep");
+        }
+    }
+
+    #[test]
+    fn test_creep_body_encoding_and_decoding() {
+        let mut exec = create_test_executor();
+        let spawn_pos = Position { x: 10, y: 10 };
+        exec.state.objects.push(GameObject::Spawn {
+            id: "spawn1".to_string(),
+            pos: spawn_pos,
+            hits: 5000,
+            max_hits: 5000,
+            owner: Owner::Bot1,
+            energy: 1000,
+            max_energy: 1000,
+            spawning: None,
+            next_id: "creep101".to_string(),
+        });
+
+        // Encode 7 distinct body parts into packed 4-bit nibbles:
+        // 1=Move, 2=Work, 3=Carry, 4=Attack, 5=RangedAttack, 6=Tough, 7=Heal
+        // 0x7654321 = (7<<24) | (6<<20) | (5<<16) | (4<<12) | (3<<8) | (2<<4) | (1<<0)
+        let encoded_body = 0x7654321;
+        let actions = vec![QueuedAction {
+            actor_id: "spawn1".to_string(),
+            action: ActionId::SpawnCreep,
+            target_id: None,
+            arg1: 7,
+            arg2: encoded_body,
+        }];
+
+        exec.resolve_actions(actions, Vec::new());
+
+        // Find the newly spawned creep
+        let creep = exec.state.objects.iter().find(|o| match o {
+            GameObject::Creep { id, .. } => id == "creep101",
+            _ => false,
+        }).expect("Spawned creep not found in state");
+
+        if let GameObject::Creep { body, .. } = creep {
+            assert_eq!(body.len(), 7);
+            assert_eq!(body[0], screeps_arena::constants::Part::Move);
+            assert_eq!(body[1], screeps_arena::constants::Part::Work);
+            assert_eq!(body[2], screeps_arena::constants::Part::Carry);
+            assert_eq!(body[3], screeps_arena::constants::Part::Attack);
+            assert_eq!(body[4], screeps_arena::constants::Part::RangedAttack);
+            assert_eq!(body[5], screeps_arena::constants::Part::Tough);
+            assert_eq!(body[6], screeps_arena::constants::Part::Heal);
+        } else {
+            panic!("Expected GameObject::Creep");
+        }
     }
 }
