@@ -762,6 +762,36 @@ impl BotLibrary {
         Ok(())
     }
 
+    /// Resolves a bot specifier query (numeric ID, `name:version`, `name:latest`, or plain `name`)
+    /// to a matching `BotEntry` from the library.
+    pub fn resolve_bot(&self, query: &str) -> Option<&BotEntry> {
+        let trimmed = query.trim();
+        if let Ok(id) = trimmed.parse::<u32>() {
+            self.bots.iter().find(|b| b.id == id)
+        } else if trimmed.contains(':') {
+            let parts: Vec<&str> = trimmed.split(':').collect();
+            let name = parts[0].trim();
+            let version_spec = parts[1].trim();
+            if version_spec.eq_ignore_ascii_case("latest") {
+                self.bots
+                    .iter()
+                    .filter(|b| b.name.eq_ignore_ascii_case(name))
+                    .max_by_key(|b| b.version)
+            } else if let Ok(v) = version_spec.parse::<u32>() {
+                self.bots
+                    .iter()
+                    .find(|b| b.name.eq_ignore_ascii_case(name) && b.version == v)
+            } else {
+                None
+            }
+        } else {
+            self.bots
+                .iter()
+                .filter(|b| b.name.eq_ignore_ascii_case(trimmed))
+                .max_by_key(|b| b.version)
+        }
+    }
+
     pub fn add(
         &mut self,
         dir: &Path,
@@ -886,5 +916,63 @@ impl BotLibrary {
 
         self.save(_dir)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_bot_with_latest_tag() {
+        let mut lib = BotLibrary::default();
+        lib.bots.push(BotEntry {
+            id: 1,
+            name: "wtfbot".to_string(),
+            version: 0,
+            arena_id: "arena1".to_string(),
+            path: "/path/wtfbot_0.so".to_string(),
+            sha256: "hash0".to_string(),
+            crash_count: 0,
+            stable_count: 0,
+        });
+        lib.bots.push(BotEntry {
+            id: 2,
+            name: "wtfbot".to_string(),
+            version: 22,
+            arena_id: "arena1".to_string(),
+            path: "/path/wtfbot_22.so".to_string(),
+            sha256: "hash22".to_string(),
+            crash_count: 0,
+            stable_count: 0,
+        });
+        lib.bots.push(BotEntry {
+            id: 3,
+            name: "wtfbot".to_string(),
+            version: 5,
+            arena_id: "arena1".to_string(),
+            path: "/path/wtfbot_5.so".to_string(),
+            sha256: "hash5".to_string(),
+            crash_count: 0,
+            stable_count: 0,
+        });
+
+        // 1. Resolve wtfbot:latest -> version 22
+        let latest = lib.resolve_bot("wtfbot:latest").unwrap();
+        assert_eq!(latest.version, 22);
+        assert_eq!(latest.id, 2);
+
+        // 2. Resolve case-insensitive wtfbot:LATEST -> version 22
+        let latest_upper = lib.resolve_bot("wtfbot:LATEST").unwrap();
+        assert_eq!(latest_upper.version, 22);
+
+        // 3. Resolve explicit version wtfbot:5 -> version 5
+        let v5 = lib.resolve_bot("wtfbot:5").unwrap();
+        assert_eq!(v5.version, 5);
+        assert_eq!(v5.id, 3);
+
+        // 4. Resolve numeric ID "2" -> version 22
+        let by_id = lib.resolve_bot("2").unwrap();
+        assert_eq!(by_id.version, 22);
     }
 }

@@ -370,45 +370,17 @@ fn main() -> Result<()> {
             let arena_id = lib.resolve_arena_id(&arena);
 
             // Resolve Bot 1
-            let bot1_entry = if let Ok(id) = bot1.parse::<u32>() {
-                lib.bots.iter().find(|b| b.id == id)
-            } else {
-                let parts: Vec<&str> = bot1.split(':').collect();
-                if parts.len() == 2 {
-                    let version = parts[1].parse::<u32>().unwrap_or(0);
-                    lib.bots
-                        .iter()
-                        .find(|b| b.name == parts[0] && b.version == version)
-                } else {
-                    lib.bots
-                        .iter()
-                        .filter(|b| b.name == bot1)
-                        .max_by_key(|b| b.version)
-                }
-            }
-            .context(format!("Failed to find Bot 1 matching: {}", bot1))?;
+            let bot1_entry = lib
+                .resolve_bot(&bot1)
+                .context(format!("Failed to find Bot 1 matching: {}", bot1))?;
             let bot1_id = bot1_entry.id;
             let bot1_path = &bot1_entry.path;
 
             // Resolve optional Bot 2
             let bot2_resolved = if let Some(ref b2_str) = bot2 {
-                let entry = if let Ok(id) = b2_str.parse::<u32>() {
-                    lib.bots.iter().find(|b| b.id == id)
-                } else {
-                    let parts: Vec<&str> = b2_str.split(':').collect();
-                    if parts.len() == 2 {
-                        let version = parts[1].parse::<u32>().unwrap_or(0);
-                        lib.bots
-                            .iter()
-                            .find(|b| b.name == parts[0] && b.version == version)
-                    } else {
-                        lib.bots
-                            .iter()
-                            .filter(|b| b.name == b2_str.as_str())
-                            .max_by_key(|b| b.version)
-                    }
-                }
-                .context(format!("Failed to find Bot 2 matching: {}", b2_str))?;
+                let entry = lib
+                    .resolve_bot(b2_str)
+                    .context(format!("Failed to find Bot 2 matching: {}", b2_str))?;
                 Some((entry.id, entry.path.clone()))
             } else {
                 None
