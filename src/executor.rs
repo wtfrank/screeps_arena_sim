@@ -773,11 +773,16 @@ impl RunExecutor {
             }
         }
 
-        // Remove destroyed units
+        // Remove destroyed units and structures
         self.state.objects.retain(|o| match o {
             GameObject::Creep { hits, .. } => *hits > 0,
             GameObject::Spawn { hits, .. } => *hits > 0,
             GameObject::Tower { hits, .. } => *hits > 0,
+            GameObject::Extension { hits, .. } => *hits > 0,
+            GameObject::Rampart { hits, .. } => *hits > 0,
+            GameObject::Container { hits, .. } => *hits > 0,
+            GameObject::Road { hits, .. } => *hits > 0,
+            GameObject::Wall { hits, .. } => *hits > 0,
             _ => true,
         });
     }
