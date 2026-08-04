@@ -391,12 +391,26 @@ fn load_layout_objects(layout_path: &Path) -> Vec<crate::models::GameObject> {
                     .get("progressTotal")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(100) as u32;
+                let structure_type_str = item
+                    .get("structureType")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("extension");
+                let structure_type = match structure_type_str.to_lowercase().as_str() {
+                    "spawn" | "structurespawn" => crate::models::StructureType::Spawn,
+                    "extension" | "structureextension" => crate::models::StructureType::Extension,
+                    "tower" | "structuretower" => crate::models::StructureType::Tower,
+                    "container" | "structurecontainer" => crate::models::StructureType::Container,
+                    "rampart" | "structurerampart" => crate::models::StructureType::Rampart,
+                    "road" | "structureroad" => crate::models::StructureType::Road,
+                    _ => crate::models::StructureType::Wall,
+                };
                 objects.push(crate::models::GameObject::ConstructionSite {
                     id,
                     pos,
                     owner,
                     progress,
                     progress_total,
+                    structure_type,
                 });
             }
             "resource" | "Resource" => {

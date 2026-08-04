@@ -26,6 +26,17 @@ pub struct BodyPartState {
     pub hits: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StructureType {
+    Spawn,
+    Extension,
+    Tower,
+    Container,
+    Rampart,
+    Road,
+    Wall,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GameObject {
     Creep {
@@ -101,6 +112,7 @@ pub enum GameObject {
         owner: Owner,
         progress: u32,
         progress_total: u32,
+        structure_type: StructureType,
     },
     Resource {
         id: String,

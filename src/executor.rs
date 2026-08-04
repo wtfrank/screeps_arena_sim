@@ -629,7 +629,7 @@ impl RunExecutor {
         }
 
         // Filter creep actions according to action priority pipeline chains per tick per creep:
-        // Chain 1: Harvest -> Attack -> Build -> Repair -> RangedHeal -> Heal
+        // Chain 1: Harvest -> Attack -> Build -> RangedHeal -> Heal
         // Chain 2: RangedAttack -> RangedMassAttack -> Build -> RangedHeal
         // Chain 3: Build -> Withdraw -> Transfer -> Drop
         let chain1_order = [
@@ -903,41 +903,249 @@ impl RunExecutor {
                         }
                     }
                 }
+                ActionId::Build => {
+                    let creep_id = &act.actor_id;
+                    let target_id = act.target_id.as_deref();
+
+                    let mut build_pos = None;
+                    let mut build_power = 0;
+                    let mut creep_energy = 0;
+
+                    for obj in &self.state.objects {
+                        if let GameObject::Creep {
+                            id, pos, body, store, fatigue, spawning, ..
+                        } = obj
+                        {
+                            if id == creep_id && *fatigue == 0 && !*spawning {
+                                build_pos = Some(*pos);
+                                let work_parts = body
+                                    .iter()
+                                    .filter(|p| p.hits > 0 && p.part == screeps_arena::constants::Part::Work)
+                                    .count() as u32;
+                                build_power = work_parts * 5;
+                                creep_energy = *store.get(&screeps_arena::constants::ResourceType::Energy).unwrap_or(&0);
+                                break;
+                            }
+                        }
+                    }
+
+                    if let (Some(cpos), Some(tid)) = (build_pos, target_id) {
+                        let mut applied_build = 0;
+                        for obj in &mut self.state.objects {
+                            if let GameObject::ConstructionSite { id, pos, progress, progress_total, .. } = obj {
+                                if id == tid && pos.x.abs_diff(cpos.x) <= 3 && pos.y.abs_diff(cpos.y) <= 3 {
+                                    let remaining_needed = progress_total.saturating_sub(*progress);
+                                    applied_build = build_power.min(creep_energy).min(remaining_needed);
+                                    *progress += applied_build;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if applied_build > 0 {
+                            for obj in &mut self.state.objects {
+                                if let GameObject::Creep { id, store, .. } = obj {
+                                    if id == creep_id {
+                                        if let Some(e) = store.get_mut(&screeps_arena::constants::ResourceType::Energy) {
+                                            *e -= applied_build;
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }
 
-        // Resolve attacks (towers & creeps)
+        // Resolve Attack, RangedAttack, RangedMassAttack, Heal, and RangedHeal actions
         let mut damage_map = HashMap::new();
+        let mut heal_map = HashMap::new();
+
         for act in &valid_actions {
-            if act.action == ActionId::Attack {
-                if let Some(ref target) = act.target_id {
-                    let mut attack_power = 30; // default standard attack power
-                    if let Some(attacker) = self.state.objects.iter().find(|o| match o {
-                        GameObject::Creep { id, .. } => id == &act.actor_id,
-                        _ => false,
-                    }) {
-                        if let GameObject::Creep { body, .. } = attacker {
-                            let active_attack_parts = body
-                                .iter()
-                                .filter(|p| p.hits > 0 && p.part == screeps_arena::constants::Part::Attack)
-                                .count() as u32;
-                            if active_attack_parts > 0 {
-                                attack_power = active_attack_parts * 30;
+            let actor_id = &act.actor_id;
+
+            // Retrieve actor position, owner, and active body parts
+            let mut actor_info = None;
+            for obj in &self.state.objects {
+                if let GameObject::Creep {
+                    id, pos, owner, body, fatigue, spawning, ..
+                } = obj
+                {
+                    if id == actor_id && *fatigue == 0 && !*spawning {
+                        actor_info = Some((*pos, *owner, body.clone()));
+                        break;
+                    }
+                }
+            }
+
+            let (apos, aowner, abody) = match actor_info {
+                Some(info) => info,
+                None => continue,
+            };
+
+            match act.action {
+                ActionId::Attack => {
+                    if let Some(ref target_id) = act.target_id {
+                        let active_parts = abody
+                            .iter()
+                            .filter(|p| p.hits > 0 && p.part == screeps_arena::constants::Part::Attack)
+                            .count() as u32;
+                        let power = if active_parts > 0 { active_parts * 30 } else { 30 };
+
+                        for obj in &self.state.objects {
+                            let tpos = match obj {
+                                GameObject::Creep { id, pos, .. } if id == target_id => Some(*pos),
+                                GameObject::Spawn { id, pos, .. } if id == target_id => Some(*pos),
+                                GameObject::Tower { id, pos, .. } if id == target_id => Some(*pos),
+                                GameObject::Extension { id, pos, .. } if id == target_id => Some(*pos),
+                                GameObject::Container { id, pos, .. } if id == target_id => Some(*pos),
+                                GameObject::Rampart { id, pos, .. } if id == target_id => Some(*pos),
+                                GameObject::Road { id, pos, .. } if id == target_id => Some(*pos),
+                                GameObject::Wall { id, pos, .. } if id == target_id => Some(*pos),
+                                _ => None,
+                            };
+                            if let Some(tp) = tpos {
+                                if apos.x.abs_diff(tp.x) <= 1 && apos.y.abs_diff(tp.y) <= 1 {
+                                    *damage_map.entry(target_id.clone()).or_insert(0) += power;
+                                }
+                                break;
                             }
                         }
                     }
-                    *damage_map.entry(target.clone()).or_insert(0) += attack_power;
                 }
+                ActionId::RangedAttack => {
+                    if let Some(ref target_id) = act.target_id {
+                        let active_parts = abody
+                            .iter()
+                            .filter(|p| p.hits > 0 && p.part == screeps_arena::constants::Part::RangedAttack)
+                            .count() as u32;
+                        let power = if active_parts > 0 { active_parts * 10 } else { 10 };
+
+                        for obj in &self.state.objects {
+                            let tpos = match obj {
+                                GameObject::Creep { id, pos, .. } if id == target_id => Some(*pos),
+                                GameObject::Spawn { id, pos, .. } if id == target_id => Some(*pos),
+                                GameObject::Tower { id, pos, .. } if id == target_id => Some(*pos),
+                                GameObject::Extension { id, pos, .. } if id == target_id => Some(*pos),
+                                GameObject::Container { id, pos, .. } if id == target_id => Some(*pos),
+                                GameObject::Rampart { id, pos, .. } if id == target_id => Some(*pos),
+                                GameObject::Road { id, pos, .. } if id == target_id => Some(*pos),
+                                GameObject::Wall { id, pos, .. } if id == target_id => Some(*pos),
+                                _ => None,
+                            };
+                            if let Some(tp) = tpos {
+                                let dist = (apos.x.abs_diff(tp.x)).max(apos.y.abs_diff(tp.y));
+                                if dist <= 3 {
+                                    *damage_map.entry(target_id.clone()).or_insert(0) += power;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                ActionId::RangedMassAttack => {
+                    let active_parts = abody
+                        .iter()
+                        .filter(|p| p.hits > 0 && p.part == screeps_arena::constants::Part::RangedAttack)
+                        .count() as u32;
+                    let num_parts = if active_parts > 0 { active_parts } else { 1 };
+
+                    // Deal area damage to hostiles within Chebyshev distance 3 (range 1: 10/part, range 2: 4/part, range 3: 1/part)
+                    for obj in &self.state.objects {
+                        let (tid, tpos, is_hostile) = match obj {
+                            GameObject::Creep { id, pos, owner, .. } => (id.clone(), *pos, *owner != aowner),
+                            GameObject::Spawn { id, pos, owner, .. } => (id.clone(), *pos, *owner != aowner),
+                            GameObject::Tower { id, pos, owner, .. } => (id.clone(), *pos, *owner != aowner),
+                            GameObject::Extension { id, pos, owner, .. } => (id.clone(), *pos, *owner != aowner),
+                            GameObject::Rampart { id, pos, owner, .. } => (id.clone(), *pos, *owner != aowner),
+                            _ => continue,
+                        };
+
+                        if is_hostile {
+                            let dist = (apos.x.abs_diff(tpos.x)).max(apos.y.abs_diff(tpos.y));
+                            let dmg_per_part = match dist {
+                                1 => 10,
+                                2 => 4,
+                                3 => 1,
+                                _ => 0,
+                            };
+                            if dmg_per_part > 0 {
+                                *damage_map.entry(tid).or_insert(0) += num_parts * dmg_per_part;
+                            }
+                        }
+                    }
+                }
+                ActionId::Heal => {
+                    if let Some(ref target_id) = act.target_id {
+                        let active_parts = abody
+                            .iter()
+                            .filter(|p| p.hits > 0 && p.part == screeps_arena::constants::Part::Heal)
+                            .count() as u32;
+                        let power = if active_parts > 0 { active_parts * 12 } else { 12 };
+
+                        for obj in &self.state.objects {
+                            if let GameObject::Creep { id, pos, .. } = obj {
+                                if id == target_id && apos.x.abs_diff(pos.x) <= 1 && apos.y.abs_diff(pos.y) <= 1 {
+                                    *heal_map.entry(target_id.clone()).or_insert(0) += power;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                ActionId::RangedHeal => {
+                    if let Some(ref target_id) = act.target_id {
+                        let active_parts = abody
+                            .iter()
+                            .filter(|p| p.hits > 0 && p.part == screeps_arena::constants::Part::Heal)
+                            .count() as u32;
+                        let power = if active_parts > 0 { active_parts * 4 } else { 4 };
+
+                        for obj in &self.state.objects {
+                            if let GameObject::Creep { id, pos, .. } = obj {
+                                if id == target_id {
+                                    let dist = (apos.x.abs_diff(pos.x)).max(apos.y.abs_diff(pos.y));
+                                    if dist <= 3 {
+                                        *heal_map.entry(target_id.clone()).or_insert(0) += power;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 
-        // Apply damages and update individual body part hits front-to-back (index 0 first)
+        // Sum all healing and damage intents per creep/structure during the tick
         for obj in &mut self.state.objects {
             match obj {
-                GameObject::Creep { id, hits, body, .. } => {
-                    if let Some(&dmg) = damage_map.get(id) {
-                        let mut remaining_dmg = dmg;
+                GameObject::Creep { id, hits, max_hits, body, .. } => {
+                    let total_damage = damage_map.get(id).copied().unwrap_or(0);
+                    let total_heal = heal_map.get(id).copied().unwrap_or(0);
+
+                    if total_heal >= total_damage {
+                        let net_heal = total_heal - total_damage;
+                        if net_heal > 0 {
+                            let mut remaining_heal = net_heal;
+                            for part in body.iter_mut().rev() {
+                                if remaining_heal == 0 {
+                                    break;
+                                }
+                                let missing = 100u32.saturating_sub(part.hits);
+                                let h = missing.min(remaining_heal);
+                                part.hits += h;
+                                remaining_heal -= h;
+                            }
+                            *hits = body.iter().map(|p| p.hits).sum::<u32>().min(*max_hits);
+                        }
+                    } else {
+                        let net_damage = total_damage - total_heal;
+                        let mut remaining_dmg = net_damage;
                         for part in body.iter_mut() {
                             if remaining_dmg == 0 {
                                 break;
@@ -955,6 +1163,31 @@ impl RunExecutor {
                     }
                 }
                 GameObject::Tower { id, hits, .. } => {
+                    if let Some(&dmg) = damage_map.get(id) {
+                        *hits = hits.saturating_sub(dmg);
+                    }
+                }
+                GameObject::Extension { id, hits, .. } => {
+                    if let Some(&dmg) = damage_map.get(id) {
+                        *hits = hits.saturating_sub(dmg);
+                    }
+                }
+                GameObject::Container { id, hits, .. } => {
+                    if let Some(&dmg) = damage_map.get(id) {
+                        *hits = hits.saturating_sub(dmg);
+                    }
+                }
+                GameObject::Rampart { id, hits, .. } => {
+                    if let Some(&dmg) = damage_map.get(id) {
+                        *hits = hits.saturating_sub(dmg);
+                    }
+                }
+                GameObject::Road { id, hits, .. } => {
+                    if let Some(&dmg) = damage_map.get(id) {
+                        *hits = hits.saturating_sub(dmg);
+                    }
+                }
+                GameObject::Wall { id, hits, .. } => {
                     if let Some(&dmg) = damage_map.get(id) {
                         *hits = hits.saturating_sub(dmg);
                     }
@@ -1216,6 +1449,77 @@ impl RunExecutor {
                 *amount = amount.saturating_sub(decay);
             }
         }
+
+        // Process completed ConstructionSite objects (progress >= progress_total)
+        let mut completed_structures = Vec::new();
+        self.state.objects.retain_mut(|o| {
+            if let GameObject::ConstructionSite { id, pos, owner, progress, progress_total, structure_type } = o {
+                if *progress >= *progress_total {
+                    let new_obj = match structure_type {
+                        crate::models::StructureType::Spawn => GameObject::Spawn {
+                            id: id.clone(),
+                            pos: *pos,
+                            hits: 5000,
+                            max_hits: 5000,
+                            owner: *owner,
+                            energy: 0,
+                            max_energy: 1000,
+                            spawning: None,
+                            next_id: format!("{}_c1", id),
+                        },
+                        crate::models::StructureType::Extension => GameObject::Extension {
+                            id: id.clone(),
+                            pos: *pos,
+                            hits: 500,
+                            max_hits: 500,
+                            owner: *owner,
+                            energy: 0,
+                            max_energy: 100,
+                        },
+                        crate::models::StructureType::Tower => GameObject::Tower {
+                            id: id.clone(),
+                            pos: *pos,
+                            hits: 3000,
+                            max_hits: 3000,
+                            owner: *owner,
+                            energy: 0,
+                            max_energy: 1000,
+                        },
+                        crate::models::StructureType::Container => GameObject::Container {
+                            id: id.clone(),
+                            pos: *pos,
+                            hits: 2500,
+                            max_hits: 2500,
+                            energy: 0,
+                            max_energy: 2000,
+                        },
+                        crate::models::StructureType::Rampart => GameObject::Rampart {
+                            id: id.clone(),
+                            pos: *pos,
+                            hits: 10000,
+                            max_hits: 10000,
+                            owner: *owner,
+                        },
+                        crate::models::StructureType::Road => GameObject::Road {
+                            id: id.clone(),
+                            pos: *pos,
+                            hits: 5000,
+                            max_hits: 5000,
+                        },
+                        crate::models::StructureType::Wall => GameObject::Wall {
+                            id: id.clone(),
+                            pos: *pos,
+                            hits: 10000,
+                            max_hits: 10000,
+                        },
+                    };
+                    completed_structures.push(new_obj);
+                    return false; // Remove completed ConstructionSite
+                }
+            }
+            true
+        });
+        self.state.objects.extend(completed_structures);
 
         // Remove destroyed units, structures, and depleted ground resources
         self.state.objects.retain(|o| match o {
@@ -1784,6 +2088,7 @@ impl RunExecutor {
                     owner,
                     progress,
                     progress_total,
+                    ..
                 } => {
                     let my = if is_bot1 {
                         *owner == Owner::Bot1
@@ -2443,6 +2748,259 @@ mod tests {
         if let GameObject::Resource { pos, amount, .. } = resource {
             assert_eq!(*pos, creep_pos);
             assert_eq!(*amount, 49);
+        }
+    }
+
+    #[test]
+    fn test_ranged_mass_attack_dropoff_and_healing() {
+        let mut exec = create_test_executor();
+
+        // Attacker creep at (10, 10) with 1 RANGED_ATTACK part (Bot1)
+        exec.state.objects.push(GameObject::Creep {
+            id: "attacker".to_string(),
+            pos: Position { x: 10, y: 10 },
+            hits: 100,
+            max_hits: 100,
+            owner: Owner::Bot1,
+            fatigue: 0,
+            spawning: false,
+            body: vec![crate::models::BodyPartState { part: screeps_arena::constants::Part::RangedAttack, hits: 100 }],
+            store: HashMap::new(),
+        });
+
+        // Hostile creep 1 at range 1 (10, 11) with 100 max hits (Bot2)
+        exec.state.objects.push(GameObject::Creep {
+            id: "enemy_r1".to_string(),
+            pos: Position { x: 10, y: 11 },
+            hits: 100,
+            max_hits: 100,
+            owner: Owner::Bot2,
+            fatigue: 0,
+            spawning: false,
+            body: vec![crate::models::BodyPartState { part: screeps_arena::constants::Part::Move, hits: 100 }],
+            store: HashMap::new(),
+        });
+
+        // Hostile creep 2 at range 2 (10, 12) with 100 max hits (Bot2)
+        exec.state.objects.push(GameObject::Creep {
+            id: "enemy_r2".to_string(),
+            pos: Position { x: 10, y: 12 },
+            hits: 100,
+            max_hits: 100,
+            owner: Owner::Bot2,
+            fatigue: 0,
+            spawning: false,
+            body: vec![crate::models::BodyPartState { part: screeps_arena::constants::Part::Move, hits: 100 }],
+            store: HashMap::new(),
+        });
+
+        // Hostile creep 3 at range 3 (10, 13) with 100 max hits (Bot2)
+        exec.state.objects.push(GameObject::Creep {
+            id: "enemy_r3".to_string(),
+            pos: Position { x: 10, y: 13 },
+            hits: 100,
+            max_hits: 100,
+            owner: Owner::Bot2,
+            fatigue: 0,
+            spawning: false,
+            body: vec![crate::models::BodyPartState { part: screeps_arena::constants::Part::Move, hits: 100 }],
+            store: HashMap::new(),
+        });
+
+        // Queue RangedMassAttack
+        let actions = vec![QueuedAction {
+            actor_id: "attacker".to_string(),
+            action: ActionId::RangedMassAttack,
+            target_id: None,
+            arg1: 0,
+            arg2: 0,
+        }];
+
+        exec.resolve_actions(actions, Vec::new());
+
+        // Range 1 (enemy_r1) receives 10 damage -> 90 hits
+        let r1 = exec.state.objects.iter().find(|o| match o {
+            GameObject::Creep { id, .. } => id == "enemy_r1",
+            _ => false,
+        }).unwrap();
+        if let GameObject::Creep { hits, .. } = r1 {
+            assert_eq!(*hits, 90);
+        }
+
+        // Range 2 (enemy_r2) receives 4 damage -> 96 hits
+        let r2 = exec.state.objects.iter().find(|o| match o {
+            GameObject::Creep { id, .. } => id == "enemy_r2",
+            _ => false,
+        }).unwrap();
+        if let GameObject::Creep { hits, .. } = r2 {
+            assert_eq!(*hits, 96);
+        }
+
+        // Range 3 (enemy_r3) receives 1 damage -> 99 hits
+        let r3 = exec.state.objects.iter().find(|o| match o {
+            GameObject::Creep { id, .. } => id == "enemy_r3",
+            _ => false,
+        }).unwrap();
+        if let GameObject::Creep { hits, .. } = r3 {
+            assert_eq!(*hits, 99);
+        }
+    }
+
+    #[test]
+    fn test_simultaneous_damage_and_heal_intent_summing() {
+        let mut exec = create_test_executor();
+        let target_pos = Position { x: 10, y: 10 };
+
+        // Target creep with 150 hits / 200 max_hits (Bot1)
+        exec.state.objects.push(GameObject::Creep {
+            id: "target".to_string(),
+            pos: target_pos,
+            hits: 150,
+            max_hits: 200,
+            owner: Owner::Bot1,
+            fatigue: 0,
+            spawning: false,
+            body: vec![
+                crate::models::BodyPartState { part: screeps_arena::constants::Part::Tough, hits: 50 },
+                crate::models::BodyPartState { part: screeps_arena::constants::Part::Move, hits: 100 },
+            ],
+            store: HashMap::new(),
+        });
+
+        // Healer creep with 5 HEAL parts (power = 60) (Bot1)
+        exec.state.objects.push(GameObject::Creep {
+            id: "healer".to_string(),
+            pos: Position { x: 10, y: 11 },
+            hits: 500,
+            max_hits: 500,
+            owner: Owner::Bot1,
+            fatigue: 0,
+            spawning: false,
+            body: vec![crate::models::BodyPartState { part: screeps_arena::constants::Part::Heal, hits: 100 }; 5],
+            store: HashMap::new(),
+        });
+
+        // Attacker creep with 1 ATTACK part (power = 30) (Bot2)
+        exec.state.objects.push(GameObject::Creep {
+            id: "attacker".to_string(),
+            pos: Position { x: 11, y: 10 },
+            hits: 100,
+            max_hits: 100,
+            owner: Owner::Bot2,
+            fatigue: 0,
+            spawning: false,
+            body: vec![crate::models::BodyPartState { part: screeps_arena::constants::Part::Attack, hits: 100 }],
+            store: HashMap::new(),
+        });
+
+        // Queue Heal from Bot1 and Attack from Bot2 in the same tick
+        let actions1 = vec![QueuedAction {
+            actor_id: "healer".to_string(),
+            action: ActionId::Heal,
+            target_id: Some("target".to_string()),
+            arg1: 0,
+            arg2: 0,
+        }];
+        let actions2 = vec![QueuedAction {
+            actor_id: "attacker".to_string(),
+            action: ActionId::Attack,
+            target_id: Some("target".to_string()),
+            arg1: 0,
+            arg2: 0,
+        }];
+
+        exec.resolve_actions(actions1, actions2);
+
+        // Net change = 60 heal - 30 damage = +30 net heal
+        // 150 hits + 30 net heal = 180 hits (capped at 200 max_hits)
+        let target = exec.state.objects.iter().find(|o| match o {
+            GameObject::Creep { id, .. } => id == "target",
+            _ => false,
+        }).unwrap();
+
+        if let GameObject::Creep { hits, max_hits, body, .. } = target {
+            assert_eq!(*hits, 180);
+            assert_eq!(*max_hits, 200);
+            assert_eq!(body[0].hits, 80); // Index 0 TOUGH part restored from 50 to 80
+            assert_eq!(body[1].hits, 100);
+        } else {
+            panic!("Expected Creep");
+        }
+    }
+
+    #[test]
+    fn test_construction_site_build_and_completion_transformation() {
+        let mut exec = create_test_executor();
+        let builder_pos = Position { x: 10, y: 10 };
+        let site_pos = Position { x: 10, y: 11 };
+
+        let mut store = HashMap::new();
+        store.insert(screeps_arena::constants::ResourceType::Energy, 100);
+
+        // Builder Creep with 1 WORK part (build power = 5) and 100 energy
+        exec.state.objects.push(GameObject::Creep {
+            id: "builder".to_string(),
+            pos: builder_pos,
+            hits: 100,
+            max_hits: 100,
+            owner: Owner::Bot1,
+            fatigue: 0,
+            spawning: false,
+            body: vec![crate::models::BodyPartState { part: screeps_arena::constants::Part::Work, hits: 100 }],
+            store,
+        });
+
+        // Extension ConstructionSite at (10, 11) with 95 progress / 100 progress_total
+        exec.state.objects.push(GameObject::ConstructionSite {
+            id: "site1".to_string(),
+            pos: site_pos,
+            owner: Owner::Bot1,
+            progress: 95,
+            progress_total: 100,
+            structure_type: crate::models::StructureType::Extension,
+        });
+
+        // Queue Build action
+        let actions = vec![QueuedAction {
+            actor_id: "builder".to_string(),
+            action: ActionId::Build,
+            target_id: Some("site1".to_string()),
+            arg1: 0,
+            arg2: 0,
+        }];
+
+        exec.resolve_actions(actions, Vec::new());
+
+        // Site progress should reach 100 (95 + 5 = 100)
+        // Builder energy deducted by 5 (100 -> 95)
+        let site = exec.state.objects.iter().find(|o| match o {
+            GameObject::ConstructionSite { id, .. } => id == "site1",
+            _ => false,
+        }).expect("Construction site not found");
+
+        if let GameObject::ConstructionSite { progress, .. } = site {
+            assert_eq!(*progress, 100);
+        }
+
+        // Apply tick decay: completed site is transformed into an Extension
+        exec.apply_tick_decay();
+
+        let site_exists = exec.state.objects.iter().any(|o| match o {
+            GameObject::ConstructionSite { id, .. } => id == "site1",
+            _ => false,
+        });
+        assert!(!site_exists, "ConstructionSite should be removed");
+
+        let extension = exec.state.objects.iter().find(|o| match o {
+            GameObject::Extension { id, .. } => id == "site1",
+            _ => false,
+        }).expect("Completed Extension structure not found");
+
+        if let GameObject::Extension { pos, hits, max_hits, owner, .. } = extension {
+            assert_eq!(*pos, site_pos);
+            assert_eq!(*hits, 500);
+            assert_eq!(*max_hits, 500);
+            assert_eq!(*owner, Owner::Bot1);
         }
     }
 }
