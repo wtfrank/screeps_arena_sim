@@ -57,11 +57,17 @@ impl RunExecutor {
 
         let mut next_id = max_layout_id + 1;
 
-        // Assign initial next_id to each spawn structure
+        // Assign initial next_id to each spawn, and set fixed starting energy for spawns and extensions.
         for obj in &mut initial_state.objects {
-            if let GameObject::Spawn { next_id: nid, .. } = obj {
+            if let GameObject::Spawn { next_id: nid, energy, max_energy, .. } = obj {
                 *nid = next_id.to_string();
                 next_id += 1;
+                *energy = 500;
+                *max_energy = 1000;
+            }
+            if let GameObject::Extension { energy, max_energy, .. } = obj {
+                *energy = 100;
+                *max_energy = 100;
             }
         }
 
@@ -859,6 +865,12 @@ impl RunExecutor {
                         }
                     }
                 }
+            }
+        }
+        // Regenerate 1 energy per tick on each spawn, up to max_energy.
+        for obj in &mut self.state.objects {
+            if let GameObject::Spawn { energy, max_energy, .. } = obj {
+                *energy = (*energy + 1).min(*max_energy);
             }
         }
     }
