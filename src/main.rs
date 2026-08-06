@@ -434,19 +434,27 @@ fn main() -> Result<()> {
                     Some(result) => {
                         println!("Simulation finished! Result: {:?}", result);
 
-                        // Record crash and stable metrics in BotLibrary
+                        // Record crash and stable metrics in BotLibrary (skipped for bots running under debugger)
+                        let debug_spec = debug_bot.as_deref().unwrap_or("").trim().to_lowercase();
+                        let debug_b1 = debug_spec == "1" || debug_spec == "all";
+                        let debug_b2 = debug_spec == "2" || debug_spec == "all";
+
                         let mut update_lib = bot_library::BotLibrary::load(&library_path)?;
-                        if executor.bot1_crashed() {
-                            update_lib.record_crash(&library_path, bot1_id)?;
-                        } else {
-                            update_lib.record_stable(&library_path, bot1_id)?;
+                        if !debug_b1 {
+                            if executor.bot1_crashed() {
+                                update_lib.record_crash(&library_path, bot1_id)?;
+                            } else {
+                                update_lib.record_stable(&library_path, bot1_id)?;
+                            }
                         }
 
                         if let Some((b2_id, _)) = bot2_resolved {
-                            if executor.bot2_crashed() {
-                                update_lib.record_crash(&library_path, b2_id)?;
-                            } else {
-                                update_lib.record_stable(&library_path, b2_id)?;
+                            if !debug_b2 {
+                                if executor.bot2_crashed() {
+                                    update_lib.record_crash(&library_path, b2_id)?;
+                                } else {
+                                    update_lib.record_stable(&library_path, b2_id)?;
+                                }
                             }
                         }
 
