@@ -212,10 +212,11 @@ impl ReplayDiffTool {
             let val1 = obj1_map.get(&key);
             let val2 = obj2_map.get(&key);
 
-            let is_null_or_missing_1 = val1.map_or(true, |v| v.is_null());
-            let is_null_or_missing_2 = val2.map_or(true, |v| v.is_null());
+            let is_empty_or_null_or_missing = |val: Option<&&Value>| {
+                val.map_or(true, |v| v.is_null() || v.as_object().map_or(false, |o| o.is_empty()))
+            };
 
-            if is_null_or_missing_1 && is_null_or_missing_2 {
+            if is_empty_or_null_or_missing(val1.as_ref()) && is_empty_or_null_or_missing(val2.as_ref()) {
                 continue;
             }
 
@@ -439,6 +440,8 @@ fn compare_json_values(v1: &Value, v2: &Value) -> bool {
     }
 
     match (v1, v2) {
+        (Value::Null, Value::Object(o)) if o.is_empty() => true,
+        (Value::Object(o), Value::Null) if o.is_empty() => true,
         (Value::Number(n1), Value::String(s2)) => n1.to_string() == *s2,
         (Value::String(s1), Value::Number(n2)) => *s1 == n2.to_string(),
         (Value::Array(a1), Value::Array(a2)) => {
