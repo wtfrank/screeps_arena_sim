@@ -351,12 +351,18 @@ fn load_layout_objects(layout_path: &Path) -> Vec<crate::models::GameObject> {
                 });
             }
             "rampart" | "StructureRampart" => {
+                let controlled_by = item.get("controlledBy").map(|v| match v {
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::String(s) => s.clone(),
+                    _ => v.to_string(),
+                });
                 objects.push(crate::models::GameObject::Rampart {
                     id,
                     pos,
                     hits,
                     max_hits,
                     owner,
+                    controlled_by,
                 });
             }
             "container" | "StructureContainer" => {

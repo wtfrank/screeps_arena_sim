@@ -1628,6 +1628,7 @@ impl RunExecutor {
                             hits: 10000,
                             max_hits: 10000,
                             owner: *owner,
+                            controlled_by: None,
                         },
                         crate::models::StructureType::Road => GameObject::Road {
                             id: id.clone(),
@@ -1957,6 +1958,7 @@ impl RunExecutor {
                     hits,
                     max_hits,
                     owner,
+                    ..
                 } => {
                     let my = if is_bot1 {
                         *owner == Owner::Bot1
@@ -2596,6 +2598,7 @@ mod tests {
             hits: 0,
             max_hits: 1000,
             owner: Owner::Bot1,
+            controlled_by: None,
         });
 
         exec.apply_tick_decay();

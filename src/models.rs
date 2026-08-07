@@ -85,6 +85,7 @@ pub enum GameObject {
         hits: u32,
         max_hits: u32,
         owner: Owner,
+        controlled_by: Option<String>,
     },
     Container {
         id: String,
@@ -303,9 +304,13 @@ impl GameState {
 
                     (id, "tower", "StructureTower", pos, Some(owner))
                 }
-                GameObject::Rampart { id, pos, hits, max_hits, owner } => {
+                GameObject::Rampart { id, pos, hits, max_hits, owner, controlled_by } => {
                     map.insert("hits".to_string(), serde_json::json!(hits));
                     map.insert("hitsMax".to_string(), serde_json::json!(max_hits));
+                    if let Some(cb) = controlled_by {
+                        let parsed_cb = cb.parse::<u64>().map(serde_json::Value::from).unwrap_or_else(|_| serde_json::json!(cb));
+                        map.insert("controlledBy".to_string(), parsed_cb);
+                    }
 
                     (id, "rampart", "StructureRampart", pos, Some(owner))
                 }
