@@ -1420,12 +1420,13 @@ impl RunExecutor {
                     if available_energy >= energy_cost {
                         let mut remaining_needed = energy_cost;
 
-                        // Deduct energy from extensions first, then spawns (within SPAWN_RANGE)
-                        for obj in &mut self.state.objects {
-                            if remaining_needed == 0 {
-                                break;
-                            }
-                            match obj {
+                        // Collect all energy structures (spawns & extensions within SPAWN_RANGE) sorted by Manhattan distance
+                        let mut energy_candidates: Vec<(usize, u32)> = self
+                            .state
+                            .objects
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(idx, obj)| match obj {
                                 GameObject::Extension {
                                     owner: o,
                                     energy,
@@ -1436,9 +1437,8 @@ impl RunExecutor {
                                     && pos.x.abs_diff(spos.x) <= range
                                     && pos.y.abs_diff(spos.y) <= range =>
                                 {
-                                    let deduct = (*energy).min(remaining_needed);
-                                    *energy -= deduct;
-                                    remaining_needed -= deduct;
+                                    let dist = spos.x.abs_diff(pos.x) as u32 + spos.y.abs_diff(pos.y) as u32;
+                                    Some((idx, dist))
                                 }
                                 GameObject::Spawn {
                                     owner: o,
@@ -1450,6 +1450,22 @@ impl RunExecutor {
                                     && pos.x.abs_diff(spos.x) <= range
                                     && pos.y.abs_diff(spos.y) <= range =>
                                 {
+                                    let dist = spos.x.abs_diff(pos.x) as u32 + spos.y.abs_diff(pos.y) as u32;
+                                    Some((idx, dist))
+                                }
+                                _ => None,
+                            })
+                            .collect();
+
+                        // Sort structures by Manhattan distance to the spawning position
+                        energy_candidates.sort_by_key(|&(_, dist)| dist);
+
+                        for (idx, _) in energy_candidates {
+                            if remaining_needed == 0 {
+                                break;
+                            }
+                            match &mut self.state.objects[idx] {
+                                GameObject::Extension { energy, .. } | GameObject::Spawn { energy, .. } => {
                                     let deduct = (*energy).min(remaining_needed);
                                     *energy -= deduct;
                                     remaining_needed -= deduct;
