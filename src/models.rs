@@ -60,6 +60,7 @@ pub enum GameObject {
         max_energy: u32,
         spawning: Option<SpawningProgress>,
         next_id: String,
+        directions: Vec<screeps_arena::constants::Direction>,
     },
     Tower {
         id: String,

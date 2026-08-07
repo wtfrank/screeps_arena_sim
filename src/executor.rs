@@ -1665,6 +1665,7 @@ impl RunExecutor {
                             max_energy: 1000,
                             spawning: None,
                             next_id: format!("{}_c1", id),
+                            directions: screeps_arena::constants::DEFAULT_SPAWN_DIRECTIONS.to_vec(),
                         },
                         crate::models::StructureType::Extension => GameObject::Extension {
                             id: id.clone(),
@@ -1752,6 +1753,7 @@ impl RunExecutor {
                 spawning,
                 energy,
                 max_energy,
+                directions,
                 ..
             } = obj
             {
@@ -1760,58 +1762,58 @@ impl RunExecutor {
                 }
                 if let Some(progress) = spawning {
                     if self.state.tick >= progress.remaining_time - 1 {
-                        ready_spawns.push((id.clone(), *pos, progress.creep_id.clone()));
+                        ready_spawns.push((id.clone(), *pos, progress.creep_id.clone(), directions.clone()));
                     }
                 }
             }
         }
 
         // 3. For creeps finished spawning, attempt placement in an adjacent non-blocked spot before setting spawning = false
-        for (spawn_id, spawn_pos, creep_id) in ready_spawns {
+        for (spawn_id, spawn_pos, creep_id, spawn_directions) in ready_spawns {
             let mut free_spot = None;
 
-            // Search 8 adjacent positions around spawn_pos
-            for dx in [-1i32, 0, 1] {
-                for dy in [-1i32, 0, 1] {
-                    if dx == 0 && dy == 0 {
+            for dir in spawn_directions {
+                let (dx, dy) = match dir {
+                    screeps_arena::constants::Direction::Top => (0i32, -1i32),
+                    screeps_arena::constants::Direction::TopRight => (1i32, -1i32),
+                    screeps_arena::constants::Direction::Right => (1i32, 0i32),
+                    screeps_arena::constants::Direction::BottomRight => (1i32, 1i32),
+                    screeps_arena::constants::Direction::Bottom => (0i32, 1i32),
+                    screeps_arena::constants::Direction::BottomLeft => (-1i32, 1i32),
+                    screeps_arena::constants::Direction::Left => (-1i32, 0i32),
+                    screeps_arena::constants::Direction::TopLeft => (-1i32, -1i32),
+                };
+
+                let nx = spawn_pos.x as i32 + dx;
+                let ny = spawn_pos.y as i32 + dy;
+
+                if nx >= 0
+                    && nx < self.state.width as i32
+                    && ny >= 0
+                    && ny < self.state.height as i32
+                {
+                    let candidate = Position {
+                        x: nx as u8,
+                        y: ny as u8,
+                    };
+                    if self.state.terrain[candidate.x as usize][candidate.y as usize] == Terrain::Wall {
                         continue;
                     }
-                    let nx = spawn_pos.x as i32 + dx;
-                    let ny = spawn_pos.y as i32 + dy;
 
-                    if nx >= 0
-                        && nx < self.state.width as i32
-                        && ny >= 0
-                        && ny < self.state.height as i32
-                    {
-                        let candidate = Position {
-                            x: nx as u8,
-                            y: ny as u8,
-                        };
-                        if self.state.terrain[candidate.x as usize][candidate.y as usize]
-                            == Terrain::Wall
-                        {
-                            continue;
-                        }
+                    // Check if tile is occupied by static structure or another non-spawning creep
+                    let occupied = self.state.objects.iter().any(|o| match o {
+                        GameObject::Creep { pos, spawning, .. } => *pos == candidate && !*spawning,
+                        GameObject::Spawn { pos, .. }
+                        | GameObject::Tower { pos, .. }
+                        | GameObject::Extension { pos, .. }
+                        | GameObject::Wall { pos, .. } => *pos == candidate,
+                        _ => false,
+                    });
 
-                        // Check if tile is occupied by static structure or another non-spawning creep
-                        let occupied = self.state.objects.iter().any(|o| match o {
-                            GameObject::Creep { pos, spawning, .. } => *pos == candidate && !*spawning,
-                            GameObject::Spawn { pos, .. }
-                            | GameObject::Tower { pos, .. }
-                            | GameObject::Extension { pos, .. }
-                            | GameObject::Wall { pos, .. } => *pos == candidate,
-                            _ => false,
-                        });
-
-                        if !occupied {
-                            free_spot = Some(candidate);
-                            break;
-                        }
+                    if !occupied {
+                        free_spot = Some(candidate);
+                        break;
                     }
-                }
-                if free_spot.is_some() {
-                    break;
                 }
             }
 
@@ -1906,6 +1908,7 @@ impl RunExecutor {
                     max_energy,
                     spawning,
                     next_id,
+                    directions,
                 } => {
                     let my = if is_bot1 {
                         *owner == Owner::Bot1
@@ -1930,6 +1933,7 @@ impl RunExecutor {
                         my: Some(my),
                         spawning: mock_spawning,
                         next_id: next_id.clone(),
+                        directions: directions.clone(),
                     })
                 }
                 _ => None,
@@ -2604,6 +2608,7 @@ mod tests {
             max_energy: 300,
             spawning: None,
             next_id: "creep101".to_string(),
+            directions: screeps_arena::constants::DEFAULT_SPAWN_DIRECTIONS.to_vec(),
         });
 
         // Spawn 1 creep with Move + RangedAttack (encoded 0x51, cost 200)
@@ -2648,6 +2653,7 @@ mod tests {
             max_energy: 1000,
             spawning: None,
             next_id: "creep1".to_string(),
+            directions: screeps_arena::constants::DEFAULT_SPAWN_DIRECTIONS.to_vec(),
         });
 
         exec.apply_tick_decay();
@@ -2692,6 +2698,7 @@ mod tests {
                 remaining_time: 1,
             }),
             next_id: "creep2".to_string(),
+            directions: screeps_arena::constants::DEFAULT_SPAWN_DIRECTIONS.to_vec(),
         });
         exec.state.objects.push(GameObject::Creep {
             id: "creep1".to_string(),
@@ -2747,6 +2754,7 @@ mod tests {
             max_energy: 1000,
             spawning: None,
             next_id: "creep101".to_string(),
+            directions: screeps_arena::constants::DEFAULT_SPAWN_DIRECTIONS.to_vec(),
         });
 
         // Encode 7 distinct body parts into packed 4-bit nibbles:

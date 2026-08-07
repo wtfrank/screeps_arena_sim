@@ -326,6 +326,7 @@ fn load_layout_objects(layout_path: &Path) -> Vec<crate::models::GameObject> {
                     max_energy,
                     spawning: None,
                     next_id: String::new(),
+                    directions: screeps_arena::constants::DEFAULT_SPAWN_DIRECTIONS.to_vec(),
                 });
             }
             "tower" | "StructureTower" => {
