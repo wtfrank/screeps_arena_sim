@@ -3214,4 +3214,126 @@ mod tests {
             assert_eq!(*owner, Owner::Bot1);
         }
     }
+
+    #[test]
+    fn test_spawning_lifecycle_and_completion_timing() {
+        let mut exec = create_test_executor();
+        let spawn_pos = Position { x: 49, y: 4 };
+
+        exec.state.objects.push(GameObject::Spawn {
+            id: "spawn121".to_string(),
+            pos: spawn_pos,
+            hits: 5000,
+            max_hits: 5000,
+            owner: Owner::Bot1,
+            energy: 1000,
+            max_energy: 1000,
+            spawning: None,
+            next_id: "creep335".to_string(),
+            directions: screeps_arena::constants::DEFAULT_SPAWN_DIRECTIONS.to_vec(),
+        });
+
+        // 2 body parts (Move + Attack) = 6 ticks needTime
+        let encoded_body = 0x41; // Move=1, Attack=4
+        let actions = vec![QueuedAction {
+            actor_id: "spawn121".to_string(),
+            action: ActionId::SpawnCreep,
+            target_id: None,
+            arg1: 2,
+            arg2: encoded_body,
+        }];
+
+        // Tick 1: Action resolved, spawn progress initialized with needTime=6, spawnTime=7
+        exec.resolve_actions(actions, Vec::new());
+        exec.apply_tick_decay();
+
+        let spawn_obj = exec.state.objects.iter().find(|o| match o {
+            GameObject::Spawn { id, .. } => id == "spawn121",
+            _ => false,
+        }).unwrap();
+
+        if let GameObject::Spawn { spawning, .. } = spawn_obj {
+            let sp = spawning.as_ref().unwrap();
+            assert_eq!(sp.need_time, 6);
+            assert_eq!(sp.remaining_time, 7);
+        }
+
+        // Ticks 2 through 5: Spawning remains active
+        for _ in 2..=5 {
+            exec.state.tick += 1;
+            exec.apply_tick_decay();
+            let creep = exec.state.objects.iter().find(|o| match o {
+                GameObject::Creep { id, .. } => id == "creep335",
+                _ => false,
+            }).unwrap();
+            if let GameObject::Creep { spawning, .. } = creep {
+                assert!(*spawning, "Creep should remain spawning during ticks 2-5");
+            }
+        }
+
+        // Tick 6: Spawning completes at end of tick decay phase
+        exec.state.tick += 1; // tick = 6
+        exec.apply_tick_decay();
+
+        let spawn_after = exec.state.objects.iter().find(|o| match o {
+            GameObject::Spawn { id, .. } => id == "spawn121",
+            _ => false,
+        }).unwrap();
+        if let GameObject::Spawn { spawning, .. } = spawn_after {
+            assert!(spawning.is_none(), "Spawn spawning state should be None at end of tick 6");
+        }
+
+        let creep_after = exec.state.objects.iter().find(|o| match o {
+            GameObject::Creep { id, .. } => id == "creep335",
+            _ => false,
+        }).unwrap();
+        if let GameObject::Creep { spawning, pos, .. } = creep_after {
+            assert!(!*spawning, "Creep spawning state should be false at end of tick 6");
+            assert_eq!(*pos, Position { x: 49, y: 3 }, "Creep should be placed at adjacent direction tile (49, 3)");
+        }
+    }
+
+    #[test]
+    fn test_spawning_fatigue_and_old_fatigue_serialization() {
+        let mut exec = create_test_executor();
+        let spawn_pos = Position { x: 49, y: 4 };
+
+        exec.state.objects.push(GameObject::Spawn {
+            id: "spawn121".to_string(),
+            pos: spawn_pos,
+            hits: 5000,
+            max_hits: 5000,
+            owner: Owner::Bot1,
+            energy: 1000,
+            max_energy: 1000,
+            spawning: None,
+            next_id: "creep335".to_string(),
+            directions: screeps_arena::constants::DEFAULT_SPAWN_DIRECTIONS.to_vec(),
+        });
+
+        // 2 body parts (Move + Attack)
+        let encoded_body = 0x41;
+        let actions = vec![QueuedAction {
+            actor_id: "spawn121".to_string(),
+            action: ActionId::SpawnCreep,
+            target_id: None,
+            arg1: 2,
+            arg2: encoded_body,
+        }];
+
+        exec.resolve_actions(actions, Vec::new());
+        exec.apply_tick_decay();
+
+        // While spawning, serialized JSON must contain negative _fatigue (-2) and no _oldFatigue (null)
+        let frame_tick1 = exec.state.to_replay_json(None, &exec.last_action_logs);
+        let creep_json = frame_tick1["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o.get("_id") == Some(&serde_json::json!("creep335")))
+            .unwrap();
+
+        assert_eq!(creep_json["_fatigue"], serde_json::json!(-2));
+        assert!(creep_json.get("_oldFatigue").map_or(true, |v| v.is_null()));
+    }
 }
