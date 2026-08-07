@@ -11,6 +11,7 @@ mod bot_library;
 mod driver;
 mod executor;
 mod models;
+mod replay_diff;
 
 use models::{GameObject, GameState, Owner, Position, Ruleset, Terrain, WinCondition};
 
@@ -68,6 +69,22 @@ enum Commands {
         /// Launch GDB terminal wrapper for debugging a specific bot (1, 2, or "all")
         #[arg(long)]
         debug_bot: Option<String>,
+    },
+    /// Compare two replay files and output detailed validation diffs
+    Diff {
+        /// Path to first replay file (e.g. simulated replay)
+        replay1: String,
+        /// Path to second replay file (e.g. reference replay)
+        replay2: String,
+        /// Specific tick number to inspect and compare
+        #[arg(short, long)]
+        tick: Option<u32>,
+        /// Enable verbose field-by-field diff output
+        #[arg(short, long)]
+        verbose: bool,
+        /// Ignore player metadata diffs on tick 1
+        #[arg(long)]
+        ignore_users: bool,
     },
     /// Internal worker process command for executing a bot in an isolated process over IPC
     #[command(hide = true)]
@@ -473,6 +490,25 @@ fn main() -> Result<()> {
                         // Keep going
                     }
                 }
+            }
+        }
+        Commands::Diff {
+            replay1,
+            replay2,
+            tick,
+            verbose,
+            ignore_users,
+        } => {
+            let options = replay_diff::DiffOptions {
+                target_tick: tick,
+                verbose,
+                ignore_users,
+            };
+            let tool = replay_diff::ReplayDiffTool::new(options);
+            let diffs = tool.compare_files(&replay1, &replay2)?;
+            replay_diff::print_diff_report(&diffs, verbose);
+            if !diffs.is_empty() {
+                std::process::exit(1);
             }
         }
         Commands::BotRunner {
