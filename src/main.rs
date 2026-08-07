@@ -62,6 +62,9 @@ enum Commands {
         /// Maximum ticks to simulate [default: 2000 for basic, 10000 for advanced]
         #[arg(short, long, long = "max-ticks", alias = "ticks")]
         max_ticks: Option<u32>,
+        /// Optional path to save official JSON replay file (e.g. replay.json)
+        #[arg(short, long = "replay-out", alias = "replay")]
+        replay_out: Option<String>,
         /// Launch GDB terminal wrapper for debugging a specific bot (1, 2, or "all")
         #[arg(long)]
         debug_bot: Option<String>,
@@ -364,6 +367,7 @@ fn main() -> Result<()> {
             bot2,
             layout,
             max_ticks,
+            replay_out,
             debug_bot,
         } => {
             let lib = bot_library::BotLibrary::load(&library_path)?;
@@ -456,6 +460,11 @@ fn main() -> Result<()> {
                                     update_lib.record_stable(&library_path, b2_id)?;
                                 }
                             }
+                        }
+
+                        if let Some(ref out_path) = replay_out {
+                            executor.save_replay(out_path)?;
+                            println!("Saved simulation replay to '{}'", out_path);
                         }
 
                         break;

@@ -193,6 +193,219 @@ pub struct GameState {
     pub terrain: Vec<Vec<Terrain>>,
 }
 
+impl GameState {
+    pub fn to_replay_json(
+        &self,
+        users_map: Option<serde_json::Value>,
+        action_logs: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> serde_json::Value {
+        let mut obj_list = Vec::new();
+
+        for obj in &self.objects {
+            let mut map = serde_json::Map::new();
+
+            // Format id as number if parseable, or string
+            let (id_val, type_str, proto_str, pos, owner_opt) = match obj {
+                GameObject::Creep { id, pos, hits, max_hits, owner, fatigue, spawning, body, store } => {
+                    map.insert("hits".to_string(), serde_json::json!(hits));
+                    map.insert("hitsMax".to_string(), serde_json::json!(max_hits));
+                    map.insert("spawning".to_string(), serde_json::json!(spawning));
+                    map.insert("fatigue".to_string(), serde_json::json!(fatigue));
+
+                    let body_json: Vec<serde_json::Value> = body
+                        .iter()
+                        .map(|b| {
+                            let type_s = match b.part {
+                                screeps_arena::constants::Part::Move => "move",
+                                screeps_arena::constants::Part::Work => "work",
+                                screeps_arena::constants::Part::Carry => "carry",
+                                screeps_arena::constants::Part::Attack => "attack",
+                                screeps_arena::constants::Part::RangedAttack => "ranged_attack",
+                                screeps_arena::constants::Part::Tough => "tough",
+                                screeps_arena::constants::Part::Heal => "heal",
+                            };
+                            serde_json::json!({
+                                "type": type_s,
+                                "hits": b.hits
+                            })
+                        })
+                        .collect();
+                    map.insert("body".to_string(), serde_json::json!(body_json));
+
+                    let mut store_map = serde_json::Map::new();
+                    for (res, amt) in store {
+                        let res_name = match res {
+                            screeps_arena::constants::ResourceType::Energy => "energy",
+                            screeps_arena::constants::ResourceType::Score => "score",
+                            screeps_arena::constants::ResourceType::ScoreX => "score_x",
+                            screeps_arena::constants::ResourceType::ScoreY => "score_y",
+                            screeps_arena::constants::ResourceType::ScoreZ => "score_z",
+                        };
+                        store_map.insert(res_name.to_string(), serde_json::json!(amt));
+                    }
+                    if !store_map.contains_key("energy") {
+                        store_map.insert("energy".to_string(), serde_json::json!(0));
+                    }
+                    map.insert("store".to_string(), serde_json::Value::Object(store_map));
+
+                    let carry_parts = body.iter().filter(|b| b.part == screeps_arena::constants::Part::Carry).count();
+                    map.insert("storeCapacity".to_string(), serde_json::json!(carry_parts * 50));
+                    map.insert("effects".to_string(), serde_json::json!([]));
+
+                    if let Some(act_log) = action_logs.get(id) {
+                        map.insert("actionLog".to_string(), act_log.clone());
+                    } else {
+                        map.insert("actionLog".to_string(), serde_json::json!({}));
+                    }
+
+                    (id, "creep", "Creep", pos, Some(owner))
+                }
+                GameObject::Spawn { id, pos, hits, max_hits, owner, energy, max_energy, spawning, .. } => {
+                    map.insert("hits".to_string(), serde_json::json!(hits));
+                    map.insert("hitsMax".to_string(), serde_json::json!(max_hits));
+
+                    let mut store_map = serde_json::Map::new();
+                    store_map.insert("energy".to_string(), serde_json::json!(energy));
+                    map.insert("store".to_string(), serde_json::Value::Object(store_map));
+
+                    map.insert("storeCapacityResource".to_string(), serde_json::json!({ "energy": max_energy }));
+
+                    if let Some(sp) = spawning {
+                        let sp_id_val = sp.creep_id.parse::<u64>().map(serde_json::Value::from).unwrap_or_else(|_| serde_json::json!(sp.creep_id));
+                        map.insert(
+                            "spawning".to_string(),
+                            serde_json::json!({
+                                "id": sp_id_val,
+                                "needTime": sp.need_time,
+                                "spawnTime": sp.remaining_time
+                            }),
+                        );
+                    }
+                    map.insert("origin".to_string(), serde_json::json!(true));
+                    map.insert("actionLog".to_string(), serde_json::json!({}));
+
+                    (id, "spawn", "StructureSpawn", pos, Some(owner))
+                }
+                GameObject::Extension { id, pos, hits, max_hits, owner, energy, max_energy } => {
+                    map.insert("hits".to_string(), serde_json::json!(hits));
+                    map.insert("hitsMax".to_string(), serde_json::json!(max_hits));
+                    map.insert("store".to_string(), serde_json::json!({ "energy": energy }));
+                    map.insert("storeCapacityResource".to_string(), serde_json::json!({ "energy": max_energy }));
+
+                    (id, "extension", "StructureExtension", pos, Some(owner))
+                }
+                GameObject::Tower { id, pos, hits, max_hits, owner, energy, max_energy } => {
+                    map.insert("hits".to_string(), serde_json::json!(hits));
+                    map.insert("hitsMax".to_string(), serde_json::json!(max_hits));
+                    map.insert("store".to_string(), serde_json::json!({ "energy": energy }));
+                    map.insert("storeCapacityResource".to_string(), serde_json::json!({ "energy": max_energy }));
+                    map.insert("actionLog".to_string(), serde_json::json!({}));
+
+                    (id, "tower", "StructureTower", pos, Some(owner))
+                }
+                GameObject::Rampart { id, pos, hits, max_hits, owner } => {
+                    map.insert("hits".to_string(), serde_json::json!(hits));
+                    map.insert("hitsMax".to_string(), serde_json::json!(max_hits));
+
+                    (id, "rampart", "StructureRampart", pos, Some(owner))
+                }
+                GameObject::Container { id, pos, hits, max_hits, energy, max_energy } => {
+                    map.insert("hits".to_string(), serde_json::json!(hits));
+                    map.insert("hitsMax".to_string(), serde_json::json!(max_hits));
+                    map.insert("store".to_string(), serde_json::json!({ "energy": energy }));
+                    map.insert("storeCapacityResource".to_string(), serde_json::json!({ "energy": max_energy }));
+
+                    (id, "container", "StructureContainer", pos, None)
+                }
+                GameObject::Road { id, pos, hits, max_hits } => {
+                    map.insert("hits".to_string(), serde_json::json!(hits));
+                    map.insert("hitsMax".to_string(), serde_json::json!(max_hits));
+
+                    (id, "road", "StructureRoad", pos, None)
+                }
+                GameObject::Wall { id, pos, hits, max_hits } => {
+                    map.insert("hits".to_string(), serde_json::json!(hits));
+                    map.insert("hitsMax".to_string(), serde_json::json!(max_hits));
+
+                    (id, "constructedWall", "StructureWall", pos, None)
+                }
+                GameObject::ConstructionSite { id, pos, owner, progress, progress_total, structure_type } => {
+                    map.insert("progress".to_string(), serde_json::json!(progress));
+                    map.insert("progressTotal".to_string(), serde_json::json!(progress_total));
+                    let proto_name = match structure_type {
+                        StructureType::Spawn => "StructureSpawn",
+                        StructureType::Extension => "StructureExtension",
+                        StructureType::Tower => "StructureTower",
+                        StructureType::Container => "StructureContainer",
+                        StructureType::Rampart => "StructureRampart",
+                        StructureType::Road => "StructureRoad",
+                        StructureType::Wall => "StructureWall",
+                    };
+                    map.insert("structureType".to_string(), serde_json::json!(proto_name));
+
+                    (id, "constructionSite", "ConstructionSite", pos, Some(owner))
+                }
+                GameObject::Resource { id, pos, amount, resource_type } => {
+                    map.insert("amount".to_string(), serde_json::json!(amount));
+                    map.insert("resourceType".to_string(), serde_json::json!(resource_type.to_lowercase()));
+
+                    (id, "resource", "Resource", pos, None)
+                }
+                GameObject::Source { id, pos, energy, max_energy } => {
+                    map.insert("energy".to_string(), serde_json::json!(energy));
+                    map.insert("energyCapacity".to_string(), serde_json::json!(max_energy));
+
+                    (id, "source", "Source", pos, None)
+                }
+                GameObject::Flag { id, pos, owner } => {
+                    (id, "flag", "Flag", pos, Some(owner))
+                }
+                GameObject::ScoreCollector { id, pos, owner } => {
+                    (id, "scoreCollector", "ScoreCollector", pos, Some(owner))
+                }
+                GameObject::BonusFlag { id, pos, owner } => {
+                    (id, "bonusFlag", "BonusFlag", pos, Some(owner))
+                }
+                GameObject::AreaEffect { id, pos, effect_type } => {
+                    map.insert("effectType".to_string(), serde_json::json!(effect_type));
+
+                    (id, "areaEffect", "AreaEffect", pos, None)
+                }
+            };
+
+            let parsed_id = id_val.parse::<u64>().map(serde_json::Value::from).unwrap_or_else(|_| serde_json::json!(id_val));
+            map.insert("_id".to_string(), parsed_id);
+            map.insert("type".to_string(), serde_json::json!(type_str));
+            map.insert("prototypeName".to_string(), serde_json::json!(proto_str));
+            map.insert("x".to_string(), serde_json::json!(pos.x));
+            map.insert("y".to_string(), serde_json::json!(pos.y));
+
+            if let Some(owner) = owner_opt {
+                match owner {
+                    Owner::Bot1 => {
+                        map.insert("user".to_string(), serde_json::json!("player1"));
+                    }
+                    Owner::Bot2 => {
+                        map.insert("user".to_string(), serde_json::json!("player2"));
+                    }
+                    Owner::Neutral => {}
+                }
+            }
+
+            obj_list.push(serde_json::Value::Object(map));
+        }
+
+        let mut tick_map = serde_json::Map::new();
+        tick_map.insert("gameTime".to_string(), serde_json::json!(self.tick));
+        if let Some(users) = users_map {
+            tick_map.insert("users".to_string(), users);
+        }
+        tick_map.insert("objects".to_string(), serde_json::Value::Array(obj_list));
+
+        serde_json::Value::Object(tick_map)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ruleset {
     pub tick_limit: u32,

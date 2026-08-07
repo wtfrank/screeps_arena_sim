@@ -17,6 +17,8 @@ pub struct RunExecutor {
     debug_b1: bool,
     debug_b2: bool,
     next_id: u32,
+    last_action_logs: HashMap<String, serde_json::Value>,
+    replay_frames: Vec<serde_json::Value>,
 }
 
 impl RunExecutor {
@@ -111,6 +113,8 @@ impl RunExecutor {
             debug_b1,
             debug_b2,
             next_id,
+            last_action_logs: HashMap::new(),
+            replay_frames: Vec::new(),
         })
     }
 
@@ -274,19 +278,41 @@ impl RunExecutor {
             return Ok(Some(self.check_win_condition(false)));
         }
 
-        // 3. Resolve actions
+        // 4. Resolve combat/actions and apply end-of-tick decay/fatigue recovery
         self.resolve_actions(actions1, actions2);
-
-        // 4. Update general state (ticks, fatigue recovery, etc.)
-        self.state.tick += 1;
         self.apply_tick_decay();
 
-        // 5. Check win conditions
+        // 5. Record frame snapshot for replay emission for current tick
+        let users_opt = if self.state.tick == 1 {
+            Some(serde_json::json!({
+                "player1": { "_id": "player1", "username": "player1", "color": "#FF3333" },
+                "player2": { "_id": "player2", "username": "player2", "color": "#5555FF" }
+            }))
+        } else {
+            None
+        };
+        let tick_frame = self.state.to_replay_json(users_opt, &self.last_action_logs);
+        self.replay_frames.push(tick_frame);
+
+        // 6. Increment tick counter for next tick
+        self.state.tick += 1;
+
+        // 7. Check win conditions
         if let Some(res) = self.check_win_conditions_active() {
             return Ok(Some(res));
         }
 
         Ok(None)
+    }
+
+    pub fn replay_frames(&self) -> &[serde_json::Value] {
+        &self.replay_frames
+    }
+
+    pub fn save_replay<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
+        let json_str = serde_json::to_string_pretty(&self.replay_frames)?;
+        std::fs::write(path, json_str)?;
+        Ok(())
     }
 
     fn check_win_condition(&self, limit_reached: bool) -> SimulationResult {
@@ -1120,6 +1146,109 @@ impl RunExecutor {
                 _ => {}
             }
         }
+
+        // Build actionLog objects for visual actions recorded this tick
+        let mut tick_action_logs: HashMap<String, serde_json::Value> = HashMap::new();
+
+        let get_obj_pos = |target_id: &str, objects: &[GameObject]| -> Option<Position> {
+            objects.iter().find_map(|o| match o {
+                GameObject::Creep { id, pos, .. } if id == target_id => Some(*pos),
+                GameObject::Spawn { id, pos, .. } if id == target_id => Some(*pos),
+                GameObject::Tower { id, pos, .. } if id == target_id => Some(*pos),
+                GameObject::Extension { id, pos, .. } if id == target_id => Some(*pos),
+                GameObject::Container { id, pos, .. } if id == target_id => Some(*pos),
+                GameObject::Rampart { id, pos, .. } if id == target_id => Some(*pos),
+                GameObject::Road { id, pos, .. } if id == target_id => Some(*pos),
+                GameObject::Wall { id, pos, .. } if id == target_id => Some(*pos),
+                GameObject::Source { id, pos, .. } if id == target_id => Some(*pos),
+                GameObject::ConstructionSite { id, pos, .. } if id == target_id => Some(*pos),
+                _ => None,
+            })
+        };
+
+        for act in &valid_actions {
+            let actor_id = &act.actor_id;
+            let target_id_opt = act.target_id.as_deref();
+
+            match act.action {
+                ActionId::Heal => {
+                    if let Some(target_id) = target_id_opt {
+                        if let Some(tp) = get_obj_pos(target_id, &self.state.objects) {
+                            let entry = tick_action_logs.entry(actor_id.clone()).or_insert_with(|| serde_json::json!({}));
+                            entry["heal"] = serde_json::json!({ "x": tp.x, "y": tp.y });
+
+                            let target_entry = tick_action_logs.entry(target_id.to_string()).or_insert_with(|| serde_json::json!({}));
+                            if let Some(actor_pos) = get_obj_pos(actor_id, &self.state.objects) {
+                                target_entry["healed"] = serde_json::json!({ "x": actor_pos.x, "y": actor_pos.y });
+                            }
+                        }
+                    }
+                }
+                ActionId::RangedHeal => {
+                    if let Some(target_id) = target_id_opt {
+                        if let Some(tp) = get_obj_pos(target_id, &self.state.objects) {
+                            let entry = tick_action_logs.entry(actor_id.clone()).or_insert_with(|| serde_json::json!({}));
+                            entry["rangedHeal"] = serde_json::json!({ "x": tp.x, "y": tp.y });
+                        }
+                    }
+                }
+                ActionId::Attack => {
+                    if let Some(target_id) = target_id_opt {
+                        if let Some(tp) = get_obj_pos(target_id, &self.state.objects) {
+                            let entry = tick_action_logs.entry(actor_id.clone()).or_insert_with(|| serde_json::json!({}));
+                            entry["attack"] = serde_json::json!({ "x": tp.x, "y": tp.y });
+                        }
+                    }
+                }
+                ActionId::RangedAttack => {
+                    if let Some(target_id) = target_id_opt {
+                        if let Some(tp) = get_obj_pos(target_id, &self.state.objects) {
+                            let entry = tick_action_logs.entry(actor_id.clone()).or_insert_with(|| serde_json::json!({}));
+                            entry["rangedAttack"] = serde_json::json!({ "x": tp.x, "y": tp.y });
+                        }
+                    }
+                }
+                ActionId::RangedMassAttack => {
+                    let entry = tick_action_logs.entry(actor_id.clone()).or_insert_with(|| serde_json::json!({}));
+                    entry["rangedMassAttack"] = serde_json::json!({});
+                }
+                ActionId::Harvest => {
+                    if let Some(target_id) = target_id_opt {
+                        if let Some(tp) = get_obj_pos(target_id, &self.state.objects) {
+                            let entry = tick_action_logs.entry(actor_id.clone()).or_insert_with(|| serde_json::json!({}));
+                            entry["harvest"] = serde_json::json!({ "x": tp.x, "y": tp.y });
+                        }
+                    }
+                }
+                ActionId::Transfer => {
+                    if let Some(target_id) = target_id_opt {
+                        if let Some(tp) = get_obj_pos(target_id, &self.state.objects) {
+                            let entry = tick_action_logs.entry(actor_id.clone()).or_insert_with(|| serde_json::json!({}));
+                            entry["transfer"] = serde_json::json!({ "x": tp.x, "y": tp.y });
+                        }
+                    }
+                }
+                ActionId::Withdraw => {
+                    if let Some(target_id) = target_id_opt {
+                        if let Some(tp) = get_obj_pos(target_id, &self.state.objects) {
+                            let entry = tick_action_logs.entry(actor_id.clone()).or_insert_with(|| serde_json::json!({}));
+                            entry["withdraw"] = serde_json::json!({ "x": tp.x, "y": tp.y });
+                        }
+                    }
+                }
+                ActionId::Build => {
+                    if let Some(target_id) = target_id_opt {
+                        if let Some(tp) = get_obj_pos(target_id, &self.state.objects) {
+                            let entry = tick_action_logs.entry(actor_id.clone()).or_insert_with(|| serde_json::json!({}));
+                            entry["build"] = serde_json::json!({ "x": tp.x, "y": tp.y });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        self.last_action_logs = tick_action_logs;
 
         // Sum all healing and damage intents per creep/structure during the tick
         for obj in &mut self.state.objects {
