@@ -290,12 +290,22 @@ impl RunExecutor {
             return Ok(Some(self.check_win_condition(false)));
         }
 
+        // Capture start-of-tick fatigue for active creeps to populate `_oldFatigue` accurately in replay JSON
+        let mut old_fatigue_map = std::collections::HashMap::new();
+        for obj in &self.state.objects {
+            if let GameObject::Creep { id, fatigue, spawning, .. } = obj {
+                if !*spawning {
+                    old_fatigue_map.insert(id.clone(), *fatigue);
+                }
+            }
+        }
+
         // 4. Resolve combat/actions and apply end-of-tick decay/fatigue recovery
         self.resolve_actions(actions1, actions2);
         self.apply_tick_decay();
 
         // 5. Record frame snapshot for replay emission for current tick
-        let tick_frame = self.state.to_replay_json(None, &self.last_action_logs);
+        let tick_frame = self.state.to_replay_json_with_old_fatigue(None, &self.last_action_logs, &old_fatigue_map);
         self.replay_frames.push(tick_frame);
 
         // 6. Increment tick counter for next tick
@@ -654,8 +664,7 @@ impl RunExecutor {
 
                     let terrain = self.state.terrain[new_pos.x as usize][new_pos.y as usize];
                     let terrain_cost = if terrain == Terrain::Swamp { 10 } else { 2 };
-                    let added_fatigue =
-                        (total_weight * terrain_cost).saturating_sub(move_parts * 2);
+                    let added_fatigue = total_weight * terrain_cost;
 
                     *fatigue = (*fatigue as u32 + added_fatigue).min(255) as u8;
                 }

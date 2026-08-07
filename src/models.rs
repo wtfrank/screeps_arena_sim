@@ -201,6 +201,15 @@ impl GameState {
         users_map: Option<serde_json::Value>,
         action_logs: &std::collections::HashMap<String, serde_json::Value>,
     ) -> serde_json::Value {
+        self.to_replay_json_with_old_fatigue(users_map, action_logs, &std::collections::HashMap::new())
+    }
+
+    pub fn to_replay_json_with_old_fatigue(
+        &self,
+        users_map: Option<serde_json::Value>,
+        action_logs: &std::collections::HashMap<String, serde_json::Value>,
+        old_fatigue_map: &std::collections::HashMap<String, u8>,
+    ) -> serde_json::Value {
         let mut obj_list = Vec::new();
 
         for obj in &self.objects {
@@ -238,15 +247,13 @@ impl GameState {
                     let move_parts = body.iter().filter(|b| b.part == screeps_arena::constants::Part::Move).count();
 
                     if *spawning {
-                        // Note: In official replays, spawning creeps carry a negative `_fatigue` value.
-                        // For 1 MOVE + 1 ATTACK creep: `_fatigue = -2`. For 8 MOVE + 8 RANGED/HEAL creep: `_fatigue = -16`.
                         map.insert("_fatigue".to_string(), serde_json::json!(-(move_parts as i32 * 2)));
-                    } else if *fatigue == 0 && move_parts > 0 && action_logs.get(id).map(|m| m.as_object().map_or(true, |obj| obj.is_empty())).unwrap_or(true) && pos.y == 3 && pos.x == 49 {
-                        // On the exact tick spawning completes, _fatigue is still negative and _oldFatigue is omitted (null).
-                        map.insert("_fatigue".to_string(), serde_json::json!(-(move_parts as i32 * 2)));
-                    } else {
+                    } else if let Some(old_f) = old_fatigue_map.get(id) {
                         map.insert("_fatigue".to_string(), serde_json::json!(fatigue));
-                        map.insert("_oldFatigue".to_string(), serde_json::json!(fatigue));
+                        map.insert("_oldFatigue".to_string(), serde_json::json!(old_f));
+                    } else {
+                        // Creep just finished spawning on this tick
+                        map.insert("_fatigue".to_string(), serde_json::json!(-(move_parts as i32 * 2)));
                     }
 
                     let mut store_map = serde_json::Map::new();
