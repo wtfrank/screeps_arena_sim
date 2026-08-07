@@ -315,6 +315,10 @@ impl RunExecutor {
         Ok(None)
     }
 
+    pub fn current_tick(&self) -> u32 {
+        self.state.tick
+    }
+
     pub fn replay_frames(&self) -> &[serde_json::Value] {
         &self.replay_frames
     }

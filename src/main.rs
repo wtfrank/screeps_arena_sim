@@ -450,10 +450,38 @@ fn main() -> Result<()> {
             )?;
 
             println!("Starting simulation on arena ID '{}'...", arena_id);
+            let start_time = std::time::Instant::now();
+
             loop {
                 match executor.step_tick()? {
                     Some(result) => {
-                        println!("Simulation finished! Result: {:?}", result);
+                        let elapsed = start_time.elapsed();
+                        let total_ticks = executor.current_tick();
+
+                        let bot1_label = format!("{}:{}", bot1_entry.name, bot1_entry.version);
+                        let bot2_label = bot2_resolved.as_ref().map(|_| {
+                            let entry = lib.resolve_bot(bot2.as_ref().unwrap()).unwrap();
+                            format!("{}:{}", entry.name, entry.version)
+                        });
+
+                        let (b1_status, b2_status) = match &result {
+                            executor::SimulationResult::Bot1Win { .. } => ("WIN", "LOSS"),
+                            executor::SimulationResult::Bot2Win { .. } => ("LOSS", "WIN"),
+                            executor::SimulationResult::Draw { .. } => ("DRAW", "DRAW"),
+                        };
+
+                        let b1_final = if executor.bot1_crashed() { "CRASHED" } else { b1_status };
+                        let b2_final = if executor.bot2_crashed() { "CRASHED" } else { b2_status };
+
+                        println!("================================================================================");
+                        println!("Simulation Finished!");
+                        println!("  Time Taken  : {:.3?} ({:.2} ms)", elapsed, elapsed.as_secs_f64() * 1000.0);
+                        println!("  Total Ticks : {}", total_ticks);
+                        println!("  Bot 1 ({}) Status : {}", bot1_label, b1_final);
+                        if let Some(ref b2_name) = bot2_label {
+                            println!("  Bot 2 ({}) Status : {}", b2_name, b2_final);
+                        }
+                        println!("================================================================================");
 
                         // Record crash and stable metrics in BotLibrary (skipped for bots running under debugger)
                         let debug_spec = debug_bot.as_deref().unwrap_or("").trim().to_lowercase();
