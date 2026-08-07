@@ -71,13 +71,15 @@ impl ReplayDiffTool {
             });
         }
 
+        let mut creep_id_map: HashMap<String, String> = HashMap::new();
+
         let min_ticks = ticks1.len().min(ticks2.len());
 
         for i in 0..min_ticks {
             let t1 = &ticks1[i];
             let t2 = &ticks2[i];
 
-            let tick_num = t1.get("gameTime").and_then(|v| v.as_u64()).unwrap_or((i + 1) as u64) as u32;
+            let tick_num = t1.get("gameTime").and_then(|v| v.as_u64()).unwrap_or(i as u64) as u32;
 
             if let Some(target) = self.options.target_tick {
                 if tick_num != target {
@@ -86,7 +88,7 @@ impl ReplayDiffTool {
             }
 
             // Compare top level gameTime
-            let tick_num2 = t2.get("gameTime").and_then(|v| v.as_u64()).unwrap_or((i + 1) as u64) as u32;
+            let tick_num2 = t2.get("gameTime").and_then(|v| v.as_u64()).unwrap_or(i as u64) as u32;
             if tick_num != tick_num2 {
                 diffs.push(DiffDetail {
                     tick: tick_num,
@@ -98,35 +100,22 @@ impl ReplayDiffTool {
                 });
             }
 
-            // Compare objects array in tick
+            // Discover newly spawning creeps on matching spawns to extend creep_id_map
             let objs1_arr = t1.get("objects").and_then(|v| v.as_array());
             let objs2_arr = t2.get("objects").and_then(|v| v.as_array());
 
-            match (objs1_arr, objs2_arr) {
-                (Some(o1), Some(o2)) => {
-                    self.compare_objects_list(tick_num, o1, o2, &user_map, &mut diffs);
-                }
-                (Some(_), None) => {
-                    diffs.push(DiffDetail {
-                        tick: tick_num,
-                        object_id: None,
-                        field: "objects".to_string(),
-                        val1: "Array".to_string(),
-                        val2: "Missing".to_string(),
-                        severity: DiffSeverity::MetadataMismatch,
-                    });
-                }
-                (None, Some(_)) => {
-                    diffs.push(DiffDetail {
-                        tick: tick_num,
-                        object_id: None,
-                        field: "objects".to_string(),
-                        val1: "Missing".to_string(),
-                        val2: "Array".to_string(),
-                        severity: DiffSeverity::MetadataMismatch,
-                    });
-                }
-                _ => {}
+            if let (Some(o1), Some(o2)) = (objs1_arr, objs2_arr) {
+                discover_creep_spawn_mappings(o1, o2, &mut creep_id_map);
+                self.compare_objects_list(tick_num, o1, o2, &user_map, &creep_id_map, &mut diffs);
+            } else if objs1_arr.is_some() != objs2_arr.is_some() {
+                diffs.push(DiffDetail {
+                    tick: tick_num,
+                    object_id: None,
+                    field: "objects".to_string(),
+                    val1: if objs1_arr.is_some() { "Array".to_string() } else { "Missing".to_string() },
+                    val2: if objs2_arr.is_some() { "Array".to_string() } else { "Missing".to_string() },
+                    severity: DiffSeverity::MetadataMismatch,
+                });
             }
         }
 
@@ -139,6 +128,7 @@ impl ReplayDiffTool {
         objs1: &[Value],
         objs2: &[Value],
         user_map: &HashMap<String, String>,
+        creep_id_map: &HashMap<String, String>,
         diffs: &mut Vec<DiffDetail>,
     ) {
         let mut map1: HashMap<String, &Value> = HashMap::new();
@@ -150,8 +140,9 @@ impl ReplayDiffTool {
             }
         }
         for obj in objs2 {
-            if let Some(id_str) = extract_object_id(obj) {
-                map2.insert(id_str, obj);
+            if let Some(raw_id) = extract_object_id(obj) {
+                let norm_id = creep_id_map.get(&raw_id).cloned().unwrap_or(raw_id);
+                map2.insert(norm_id, obj);
             }
         }
 
@@ -186,7 +177,7 @@ impl ReplayDiffTool {
         for id in keys1.intersection(&keys2) {
             let o1 = map1.get(id).unwrap();
             let o2 = map2.get(id).unwrap();
-            self.compare_single_object(tick, id, o1, o2, user_map, diffs);
+            self.compare_single_object(tick, id, o1, o2, user_map, creep_id_map, diffs);
         }
     }
 
@@ -197,6 +188,7 @@ impl ReplayDiffTool {
         o1: &Value,
         o2: &Value,
         user_map: &HashMap<String, String>,
+        creep_id_map: &HashMap<String, String>,
         diffs: &mut Vec<DiffDetail>,
     ) {
         let obj1_map = match o1.as_object() {
@@ -222,8 +214,8 @@ impl ReplayDiffTool {
 
             match (val1, val2) {
                 (Some(v1), Some(v2)) => {
-                    let norm1 = normalize_user_field(&key, v1, user_map);
-                    let norm2 = normalize_user_field(&key, v2, user_map);
+                    let norm1 = normalize_field(&key, v1, user_map, creep_id_map, false);
+                    let norm2 = normalize_field(&key, v2, user_map, creep_id_map, true);
 
                     if !compare_json_values(&norm1, &norm2) {
                         diffs.push(DiffDetail {
@@ -237,7 +229,7 @@ impl ReplayDiffTool {
                     }
                 }
                 (Some(v1), None) => {
-                    let norm1 = normalize_user_field(&key, v1, user_map);
+                    let norm1 = normalize_field(&key, v1, user_map, creep_id_map, false);
                     diffs.push(DiffDetail {
                         tick,
                         object_id: Some(id.to_string()),
@@ -248,7 +240,7 @@ impl ReplayDiffTool {
                     });
                 }
                 (None, Some(v2)) => {
-                    let norm2 = normalize_user_field(&key, v2, user_map);
+                    let norm2 = normalize_field(&key, v2, user_map, creep_id_map, true);
                     diffs.push(DiffDetail {
                         tick,
                         object_id: Some(id.to_string()),
@@ -314,12 +306,101 @@ fn extract_users(ticks: &[Value]) -> Vec<String> {
     users
 }
 
-fn normalize_user_field(key: &str, val: &Value, user_map: &HashMap<String, String>) -> Value {
+fn discover_creep_spawn_mappings(
+    objs1: &[Value],
+    objs2: &[Value],
+    creep_id_map: &mut HashMap<String, String>,
+) {
+    let mut spawns1: HashMap<String, &Value> = HashMap::new();
+    let mut spawns2: HashMap<String, &Value> = HashMap::new();
+
+    for o in objs1 {
+        if o.get("type").and_then(|v| v.as_str()) == Some("spawn") {
+            if let Some(id) = extract_object_id(o) {
+                spawns1.insert(id, o);
+            }
+        }
+    }
+    for o in objs2 {
+        if o.get("type").and_then(|v| v.as_str()) == Some("spawn") {
+            if let Some(id) = extract_object_id(o) {
+                spawns2.insert(id, o);
+            }
+        }
+    }
+
+    for (spawn_id, sp1) in spawns1 {
+        if let Some(sp2) = spawns2.get(&spawn_id) {
+            let info1 = sp1.get("spawning").and_then(|v| v.as_object());
+            let info2 = sp2.get("spawning").and_then(|v| v.as_object());
+
+            if let (Some(s1), Some(s2)) = (info1, info2) {
+                let id1 = s1.get("id").map(|v| match v {
+                    Value::Number(n) => n.to_string(),
+                    Value::String(s) => s.clone(),
+                    _ => v.to_string(),
+                });
+                let id2 = s2.get("id").map(|v| match v {
+                    Value::Number(n) => n.to_string(),
+                    Value::String(s) => s.clone(),
+                    _ => v.to_string(),
+                });
+                let need1 = s1.get("needTime");
+                let need2 = s2.get("needTime");
+                let time1 = s1.get("spawnTime");
+                let time2 = s2.get("spawnTime");
+
+                if let (Some(cid1), Some(cid2)) = (id1, id2) {
+                    if need1 == need2 && time1 == time2 {
+                        // Map replay 2 creep ID (cid2) to reference replay 1 creep ID (cid1)
+                        creep_id_map.insert(cid2, cid1);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn normalize_field(
+    key: &str,
+    val: &Value,
+    user_map: &HashMap<String, String>,
+    creep_id_map: &HashMap<String, String>,
+    is_replay2: bool,
+) -> Value {
     if key == "user" || key == "controlledBy" {
         if let Some(s) = val.as_str() {
             if let Some(norm) = user_map.get(s) {
                 return Value::String(norm.clone());
             }
+        }
+    } else if key == "_id" || key == "next_id" {
+        if is_replay2 {
+            let id_str = match val {
+                Value::Number(n) => n.to_string(),
+                Value::String(s) => s.clone(),
+                _ => val.to_string(),
+            };
+            if let Some(mapped) = creep_id_map.get(&id_str) {
+                return Value::String(mapped.clone());
+            }
+        }
+    } else if key == "spawning" {
+        if let Some(obj) = val.as_object() {
+            let mut norm_obj = obj.clone();
+            if is_replay2 {
+                if let Some(sp_id) = obj.get("id") {
+                    let id_str = match sp_id {
+                        Value::Number(n) => n.to_string(),
+                        Value::String(s) => s.clone(),
+                        _ => sp_id.to_string(),
+                    };
+                    if let Some(mapped) = creep_id_map.get(&id_str) {
+                        norm_obj.insert("id".to_string(), Value::String(mapped.clone()));
+                    }
+                }
+            }
+            return Value::Object(norm_obj);
         }
     }
     val.clone()

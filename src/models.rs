@@ -239,8 +239,12 @@ impl GameState {
                     if *spawning {
                         // Note: In official replays, spawning creeps carry a negative `_fatigue` value.
                         // For 1 MOVE + 1 ATTACK creep: `_fatigue = -2`. For 8 MOVE + 8 RANGED/HEAL creep: `_fatigue = -16`.
-                        // It represents `-(move_parts * 2)` (or `-(non_move_parts * 2)` when equal).
+                        // It is implemented as `-(move_parts * 2)`, though it could potentially be `-(non_move_parts * 2)`
+                        // since in verified replay samples move_parts equals non_move_parts.
                         map.insert("_fatigue".to_string(), serde_json::json!(-(move_parts as i32 * 2)));
+                    } else {
+                        map.insert("_fatigue".to_string(), serde_json::json!(fatigue));
+                        map.insert("_oldFatigue".to_string(), serde_json::json!(fatigue));
                     }
 
                     let mut store_map = serde_json::Map::new();

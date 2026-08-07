@@ -723,6 +723,42 @@ impl RunExecutor {
                     continue;
                 }
 
+                // Range and target validation: filter out out-of-range or invalid actions upfront
+                if let Some(ref tid) = act.target_id {
+                    let actor_pos = self.state.objects.iter().find_map(|o| match o {
+                        GameObject::Creep { id, pos, fatigue, spawning, .. } if id == &act.actor_id && *fatigue == 0 && !*spawning => Some(*pos),
+                        GameObject::Tower { id, pos, .. } if id == &act.actor_id => Some(*pos),
+                        _ => None,
+                    });
+                    let target_pos = self.state.objects.iter().find_map(|o| match o {
+                        GameObject::Creep { id, pos, .. } if id == tid => Some(*pos),
+                        GameObject::Spawn { id, pos, .. } if id == tid => Some(*pos),
+                        GameObject::Tower { id, pos, .. } if id == tid => Some(*pos),
+                        GameObject::Extension { id, pos, .. } if id == tid => Some(*pos),
+                        GameObject::Container { id, pos, .. } if id == tid => Some(*pos),
+                        GameObject::Rampart { id, pos, .. } if id == tid => Some(*pos),
+                        GameObject::Road { id, pos, .. } if id == tid => Some(*pos),
+                        GameObject::Wall { id, pos, .. } if id == tid => Some(*pos),
+                        GameObject::Source { id, pos, .. } if id == tid => Some(*pos),
+                        GameObject::ConstructionSite { id, pos, .. } if id == tid => Some(*pos),
+                        _ => None,
+                    });
+
+                    if let (Some(apos), Some(tpos)) = (actor_pos, target_pos) {
+                        let dist = (apos.x.abs_diff(tpos.x)).max(apos.y.abs_diff(tpos.y));
+                        let max_range = match act.action {
+                            ActionId::Attack | ActionId::Heal | ActionId::Harvest | ActionId::Transfer | ActionId::Withdraw => 1,
+                            ActionId::RangedAttack | ActionId::RangedHeal | ActionId::Build => 3,
+                            _ => u8::MAX,
+                        };
+                        if dist > max_range {
+                            continue; // Reject out-of-range action upfront!
+                        }
+                    } else if act.action != ActionId::RangedMassAttack && act.action != ActionId::SpawnCreep {
+                        continue; // Target missing
+                    }
+                }
+
                 if in_chain1 {
                     chain1_used = true;
                 }
@@ -1180,6 +1216,11 @@ impl RunExecutor {
             let actor_id = &act.actor_id;
             let target_id_opt = act.target_id.as_deref();
 
+            let actor_pos = match get_obj_pos(actor_id, &self.state.objects) {
+                Some(p) => p,
+                None => continue,
+            };
+
             match act.action {
                 ActionId::Heal => {
                     if let Some(target_id) = target_id_opt {
@@ -1188,9 +1229,7 @@ impl RunExecutor {
                             entry["heal"] = serde_json::json!({ "x": tp.x, "y": tp.y });
 
                             let target_entry = tick_action_logs.entry(target_id.to_string()).or_insert_with(|| serde_json::json!({}));
-                            if let Some(actor_pos) = get_obj_pos(actor_id, &self.state.objects) {
-                                target_entry["healed"] = serde_json::json!({ "x": actor_pos.x, "y": actor_pos.y });
-                            }
+                            target_entry["healed"] = serde_json::json!({ "x": actor_pos.x, "y": actor_pos.y });
                         }
                     }
                 }
