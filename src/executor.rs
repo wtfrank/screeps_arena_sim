@@ -1500,11 +1500,12 @@ impl RunExecutor {
 
                         // Create the new creep with spawning = true (takes 3 ticks per body part, e.g. body_len * 3)
                         let need_time = body_len.max(1) * 3;
+                        let spawn_time = self.state.tick + need_time;
 
                         let spawn_progress = crate::models::SpawningProgress {
                             creep_id: new_creep_id.clone(),
                             need_time,
-                            remaining_time: need_time,
+                            remaining_time: spawn_time,
                         };
 
                         // Set spawning state on the spawn structure
@@ -1715,10 +1716,7 @@ impl RunExecutor {
                     *energy += 1;
                 }
                 if let Some(progress) = spawning {
-                    if progress.remaining_time > 0 {
-                        progress.remaining_time -= 1;
-                    }
-                    if progress.remaining_time == 0 {
+                    if self.state.tick >= progress.remaining_time - 1 {
                         ready_spawns.push((id.clone(), *pos, progress.creep_id.clone()));
                     }
                 }

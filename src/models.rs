@@ -233,6 +233,16 @@ impl GameState {
                         .collect();
                     map.insert("body".to_string(), serde_json::json!(body_json));
 
+                    let carry_parts = body.iter().filter(|b| b.part == screeps_arena::constants::Part::Carry).count();
+                    let move_parts = body.iter().filter(|b| b.part == screeps_arena::constants::Part::Move).count();
+
+                    if *spawning {
+                        // Note: In official replays, spawning creeps carry a negative `_fatigue` value.
+                        // For 1 MOVE + 1 ATTACK creep: `_fatigue = -2`. For 8 MOVE + 8 RANGED/HEAL creep: `_fatigue = -16`.
+                        // It represents `-(move_parts * 2)` (or `-(non_move_parts * 2)` when equal).
+                        map.insert("_fatigue".to_string(), serde_json::json!(-(move_parts as i32 * 2)));
+                    }
+
                     let mut store_map = serde_json::Map::new();
                     for (res, amt) in store {
                         let res_name = match res {
@@ -244,18 +254,17 @@ impl GameState {
                         };
                         store_map.insert(res_name.to_string(), serde_json::json!(amt));
                     }
-                    if !store_map.contains_key("energy") {
+                    if carry_parts > 0 && !store_map.contains_key("energy") {
                         store_map.insert("energy".to_string(), serde_json::json!(0));
                     }
                     map.insert("store".to_string(), serde_json::Value::Object(store_map));
 
-                    let carry_parts = body.iter().filter(|b| b.part == screeps_arena::constants::Part::Carry).count();
                     map.insert("storeCapacity".to_string(), serde_json::json!(carry_parts * 50));
                     map.insert("effects".to_string(), serde_json::json!([]));
 
                     if let Some(act_log) = action_logs.get(id) {
                         map.insert("actionLog".to_string(), act_log.clone());
-                    } else {
+                    } else if !*spawning || self.tick > 1 {
                         map.insert("actionLog".to_string(), serde_json::json!({}));
                     }
 
