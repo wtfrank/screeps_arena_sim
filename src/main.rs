@@ -506,7 +506,7 @@ fn main() -> Result<()> {
             };
             let tool = replay_diff::ReplayDiffTool::new(options);
             let diffs = tool.compare_files(&replay1, &replay2)?;
-            replay_diff::print_diff_report(&diffs, verbose);
+            replay_diff::print_diff_report(&replay1, &replay2, &diffs, verbose);
             if !diffs.is_empty() {
                 std::process::exit(1);
             }

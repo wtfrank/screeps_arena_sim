@@ -351,6 +351,8 @@ fn compare_json_values(v1: &Value, v2: &Value) -> bool {
     }
 
     match (v1, v2) {
+        (Value::Number(n1), Value::String(s2)) => n1.to_string() == *s2,
+        (Value::String(s1), Value::Number(n2)) => *s1 == n2.to_string(),
         (Value::Array(a1), Value::Array(a2)) => {
             if a1.len() != a2.len() {
                 return false;
@@ -382,13 +384,15 @@ fn compare_json_values(v1: &Value, v2: &Value) -> bool {
     }
 }
 
-pub fn print_diff_report(diffs: &[DiffDetail], verbose: bool) {
+pub fn print_diff_report(file1: &str, file2: &str, diffs: &[DiffDetail], verbose: bool) {
     if diffs.is_empty() {
+        println!("{}", format!("Comparing replay files:\n  1) {}\n  2) {}", file1, file2).dimmed());
         println!("{}", "✓ Replays match perfectly! No differences found.".green().bold());
         return;
     }
 
-    println!("{}", format!("❌ Found {} differences between replay files:", diffs.len()).red().bold());
+    println!("{}", format!("❌ Found {} difference(s) between replay files:", diffs.len()).red().bold());
+    println!("{}", format!("  Replay 1: {}\n  Replay 2: {}", file1.bold(), file2.bold()).cyan());
     println!("{}", "================================================================================".yellow());
 
     let mut by_tick: HashMap<u32, Vec<&DiffDetail>> = HashMap::new();
@@ -401,7 +405,9 @@ pub fn print_diff_report(diffs: &[DiffDetail], verbose: bool) {
 
     for t in ticks {
         let tick_diffs = by_tick.get(&t).unwrap();
-        println!("{} [Tick {}] - {} discrepancy(ies):", "▶".blue(), t, tick_diffs.len());
+        let count = tick_diffs.len();
+        let label = if count == 1 { "discrepancy" } else { "discrepancies" };
+        println!("{} [Tick {}] - {} {}:", "▶".blue(), t, count, label);
 
         for d in tick_diffs {
             let id_str = d.object_id.as_deref().unwrap_or("GLOBAL");
