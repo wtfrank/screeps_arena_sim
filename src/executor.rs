@@ -1730,9 +1730,7 @@ impl RunExecutor {
             _ => true,
         });
 
-        // 2. Process fatigue decay and spawning progress & spawn energy regeneration
-        let mut ready_spawns = Vec::new();
-
+        // 2. Process fatigue decay and spawn energy regeneration
         for obj in &mut self.state.objects {
             if let GameObject::Creep { fatigue, body, spawning, .. } = obj {
                 if !*spawning {
@@ -1743,28 +1741,37 @@ impl RunExecutor {
                     let fatigue_reduction = move_parts * 2;
                     *fatigue = fatigue.saturating_sub(fatigue_reduction as u8);
                 }
-            } else if let GameObject::Spawn {
+            } else if let GameObject::Spawn { energy, max_energy, .. } = obj {
+                if *energy < *max_energy {
+                    *energy += 1;
+                }
+            }
+        }
+
+        self.process_spawn_completions();
+    }
+
+    fn process_spawn_completions(&mut self) {
+        let mut ready_spawns = Vec::new();
+
+        for obj in &mut self.state.objects {
+            if let GameObject::Spawn {
                 id,
                 pos,
                 spawning,
-                energy,
-                max_energy,
                 directions,
                 ..
             } = obj
             {
-                if *energy < *max_energy {
-                    *energy += 1;
-                }
                 if let Some(progress) = spawning {
-                    if self.state.tick >= progress.remaining_time - 1 {
+                    if self.state.tick + 1 >= progress.remaining_time {
                         ready_spawns.push((id.clone(), *pos, progress.creep_id.clone(), directions.clone()));
                     }
                 }
             }
         }
 
-        // 3. For creeps finished spawning, attempt placement in an adjacent non-blocked spot before setting spawning = false
+        // For creeps finished spawning, attempt placement in an adjacent non-blocked spot before setting spawning = false
         for (spawn_id, spawn_pos, creep_id, spawn_directions) in ready_spawns {
             let mut free_spot = None;
 
@@ -1836,7 +1843,6 @@ impl RunExecutor {
                     }
                 }
             }
-            // If no adjacent free spot is available, keep spawning progress remaining_time = 0 & creep spawning = true so placement retries next tick
         }
     }
 
