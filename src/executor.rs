@@ -2405,7 +2405,9 @@ mod tests {
             bot2_crashed: false,
             debug_b1: false,
             debug_b2: false,
-            next_id: 1000,
+            next_id: 1,
+            last_action_logs: HashMap::new(),
+            replay_frames: Vec::new(),
         }
     }
 
