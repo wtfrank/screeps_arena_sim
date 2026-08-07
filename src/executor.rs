@@ -117,13 +117,15 @@ impl RunExecutor {
             replay_frames: Vec::new(),
         };
 
-        // Record initial tick 0 snapshot frame for official replay emission
+        executor.state.tick = 0;
         let users_opt = Some(serde_json::json!({
             "player1": { "_id": "player1", "username": "player1", "color": "#FF3333" },
             "player2": { "_id": "player2", "username": "player2", "color": "#5555FF" }
         }));
         let tick0_frame = executor.state.to_replay_json(users_opt, &executor.last_action_logs);
         executor.replay_frames.push(tick0_frame);
+
+        executor.state.tick = 1;
 
         Ok(executor)
     }
@@ -293,15 +295,7 @@ impl RunExecutor {
         self.apply_tick_decay();
 
         // 5. Record frame snapshot for replay emission for current tick
-        let users_opt = if self.state.tick == 1 {
-            Some(serde_json::json!({
-                "player1": { "_id": "player1", "username": "player1", "color": "#FF3333" },
-                "player2": { "_id": "player2", "username": "player2", "color": "#5555FF" }
-            }))
-        } else {
-            None
-        };
-        let tick_frame = self.state.to_replay_json(users_opt, &self.last_action_logs);
+        let tick_frame = self.state.to_replay_json(None, &self.last_action_logs);
         self.replay_frames.push(tick_frame);
 
         // 6. Increment tick counter for next tick
@@ -1740,13 +1734,15 @@ impl RunExecutor {
         let mut ready_spawns = Vec::new();
 
         for obj in &mut self.state.objects {
-            if let GameObject::Creep { fatigue, body, .. } = obj {
-                let move_parts = body
-                    .iter()
-                    .filter(|p| p.hits > 0 && p.part == screeps_arena::constants::Part::Move)
-                    .count() as u32;
-                let fatigue_reduction = move_parts * 2;
-                *fatigue = fatigue.saturating_sub(fatigue_reduction as u8);
+            if let GameObject::Creep { fatigue, body, spawning, .. } = obj {
+                if !*spawning {
+                    let move_parts = body
+                        .iter()
+                        .filter(|p| p.hits > 0 && p.part == screeps_arena::constants::Part::Move)
+                        .count() as u32;
+                    let fatigue_reduction = move_parts * 2;
+                    *fatigue = fatigue.saturating_sub(fatigue_reduction as u8);
+                }
             } else if let GameObject::Spawn {
                 id,
                 pos,
