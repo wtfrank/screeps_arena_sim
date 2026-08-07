@@ -295,6 +295,8 @@ impl GameState {
                                 "spawnTime": sp.remaining_time
                             }),
                         );
+                    } else {
+                        map.insert("spawning".to_string(), serde_json::Value::Null);
                     }
                     map.insert("origin".to_string(), serde_json::json!(true));
                     map.insert("actionLog".to_string(), serde_json::json!({}));

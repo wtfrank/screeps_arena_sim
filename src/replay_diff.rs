@@ -212,6 +212,13 @@ impl ReplayDiffTool {
             let val1 = obj1_map.get(&key);
             let val2 = obj2_map.get(&key);
 
+            let is_null_or_missing_1 = val1.map_or(true, |v| v.is_null());
+            let is_null_or_missing_2 = val2.map_or(true, |v| v.is_null());
+
+            if is_null_or_missing_1 && is_null_or_missing_2 {
+                continue;
+            }
+
             match (val1, val2) {
                 (Some(v1), Some(v2)) => {
                     let norm1 = normalize_field(&key, v1, user_map, creep_id_map, false);
@@ -235,7 +242,7 @@ impl ReplayDiffTool {
                         object_id: Some(id.to_string()),
                         field: key.clone(),
                         val1: norm1.to_string(),
-                        val2: "Missing".to_string(),
+                        val2: "null".to_string(),
                         severity: DiffSeverity::FieldMismatch,
                     });
                 }
@@ -245,7 +252,7 @@ impl ReplayDiffTool {
                         tick,
                         object_id: Some(id.to_string()),
                         field: key.clone(),
-                        val1: "Missing".to_string(),
+                        val1: "null".to_string(),
                         val2: norm2.to_string(),
                         severity: DiffSeverity::FieldMismatch,
                     });
