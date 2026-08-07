@@ -103,7 +103,7 @@ impl RunExecutor {
             (None, false)
         };
 
-        Ok(Self {
+        let mut executor = Self {
             state: initial_state,
             bot1_driver,
             bot2_driver,
@@ -115,7 +115,17 @@ impl RunExecutor {
             next_id,
             last_action_logs: HashMap::new(),
             replay_frames: Vec::new(),
-        })
+        };
+
+        // Record initial tick 0 snapshot frame for official replay emission
+        let users_opt = Some(serde_json::json!({
+            "player1": { "_id": "player1", "username": "player1", "color": "#FF3333" },
+            "player2": { "_id": "player2", "username": "player2", "color": "#5555FF" }
+        }));
+        let tick0_frame = executor.state.to_replay_json(users_opt, &executor.last_action_logs);
+        executor.replay_frames.push(tick0_frame);
+
+        Ok(executor)
     }
 
     pub fn bot1_crashed(&self) -> bool {

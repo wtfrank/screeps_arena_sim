@@ -4,18 +4,11 @@ Import map layout data (terrain + initial objects) from a mitmproxy .flows file.
 
 For each game found in the flow file, looks for a matching pair of:
   GET /api/game/<game_id>               - provides arena_id and terrain string
-  GET /api/game/<game_id>/replay/100    - provides tick 1 object list
+  GET /api/game/<game_id>/replay/0      - provides tick 0 object list
 
 Layouts are saved under the XDG data directory as:
   layouts/<arena_id>/<game_id>/terrain.json
   layouts/<arena_id>/<game_id>/objects.json
-
-The tick 1 object snapshot is used as the closest available approximation to
-the initial game state. Creeps that are mid-spawn at tick 1 are excluded (their
-_id appears in the spawn's `spawning.id` field) since they did not exist at
-tick 0.  Creeps that were already on the map at tick 0 and moved during tick 1
-will have incorrect positions — this is an unavoidable limitation of using the
-replay API.
 
 Usage:
     python3 import_layouts.py <path-to-session.flows> [--data-dir <path>]
@@ -49,12 +42,12 @@ def parse_flows(flows_path: Path) -> tuple[dict[str, dict], dict[str, list]]:
     """
     Scan the flow file and collect:
       game_info[game_id]  = {"arena_id": ..., "terrain": ...}
-      tick1_objects[game_id] = [list of tick-1 objects]
+      tick0_objects[game_id] = [list of tick-0 objects]
 
     Returns both dicts; only game_ids present in both are complete layouts.
     """
     game_info: dict[str, dict] = {}
-    tick1_objects: dict[str, list] = {}
+    tick0_objects: dict[str, list] = {}
 
     with open(flows_path, "rb") as f:
         for flow in mio.FlowReader(f).stream():
@@ -90,15 +83,11 @@ def parse_flows(flows_path: Path) -> tuple[dict[str, dict], dict[str, list]]:
                         "terrain": terrain,
                     }
 
-            elif len(parts) == 4 and parts[3] == "replay":
-                # This shouldn't match /replay/100 since that has 5 parts — skip
-                pass
-
             elif len(parts) == 5 and parts[3] == "replay":
                 # GET /api/game/<game_id>/replay/<tick>
-                # We only want tick 1 (replay/100 returns tick 1 objects)
+                # Fetch tick 0 initial replay snapshot
                 tick_param = parts[4]
-                if tick_param != "100":
+                if tick_param != "0":
                     continue
 
                 # The replay endpoint returns a raw JSON array of tick snapshots
@@ -106,11 +95,11 @@ def parse_flows(flows_path: Path) -> tuple[dict[str, dict], dict[str, list]]:
                 if not ticks:
                     continue
 
-                tick1 = ticks[0]
-                objects = tick1.get("objects", [])
-                tick1_objects[game_id] = objects
+                tick0 = ticks[0]
+                objects = tick0.get("objects", [])
+                tick0_objects[game_id] = objects
 
-    return game_info, tick1_objects
+    return game_info, tick0_objects
 
 
 def filter_objects(objects: list[dict]) -> list[dict]:
@@ -184,18 +173,23 @@ def main() -> None:
     data_dir = args.data_dir or get_default_data_dir()
 
     print(f"Scanning {args.flows} ...")
-    game_info, tick1_objects = parse_flows(args.flows)
+    game_info, tick0_objects = parse_flows(args.flows)
 
-    complete = set(game_info) & set(tick1_objects)
-    missing_replay = set(game_info) - set(tick1_objects)
-    missing_game = set(tick1_objects) - set(game_info)
+    complete = set(game_info) & set(tick0_objects)
+    missing_replay = set(game_info) - set(tick0_objects)
+    missing_game = set(tick0_objects) - set(game_info)
+
+    if missing_replay:
+        for gid in sorted(missing_replay):
+            arena = game_info[gid].get("arena_id", "unknown")
+            print(f"Error: Tick 0 replay response (/api/game/{gid}/replay/0) not found in capture flow for arena={arena}.", file=sys.stderr)
 
     if not complete:
         print("No complete game+replay pairs found.")
         if missing_replay:
-            print(f"  {len(missing_replay)} game(s) with no matching replay/100 response")
+            print(f"  {len(missing_replay)} game(s) missing tick 0 (/replay/0) response", file=sys.stderr)
         if missing_game:
-            print(f"  {len(missing_game)} replay(s) with no matching game response")
+            print(f"  {len(missing_game)} replay(s) with no matching game response", file=sys.stderr)
         return
 
     saved = 0
@@ -204,7 +198,7 @@ def main() -> None:
         info = game_info[game_id]
         arena_id = info["arena_id"]
         terrain = info["terrain"]
-        objects = filter_objects(tick1_objects[game_id])
+        objects = filter_objects(tick0_objects[game_id])
 
         layout_dir = data_dir / "layouts" / arena_id / game_id
         if layout_dir.exists():
@@ -217,7 +211,7 @@ def main() -> None:
 
     print(f"\n{saved} layout(s) saved, {skipped} already present (skipped).")
     if missing_replay:
-        print(f"{len(missing_replay)} game(s) skipped: no replay/100 response captured.")
+        print(f"{len(missing_replay)} game(s) skipped: missing tick 0 (/replay/0) response.", file=sys.stderr)
     print(f"Data directory: {data_dir / 'layouts'}")
 
 
