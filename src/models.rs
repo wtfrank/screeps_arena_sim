@@ -166,7 +166,7 @@ impl Terrain {
                 let idx = y * width + x;
                 if idx < bytes.len() {
                     grid[x][y] = match bytes[idx] {
-                        b'1' => Terrain::Wall,
+                        b'1' | b'3' => Terrain::Wall,
                         b'2' => Terrain::Swamp,
                         _ => Terrain::Plain,
                     };
