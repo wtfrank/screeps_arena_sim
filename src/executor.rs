@@ -1503,8 +1503,23 @@ impl RunExecutor {
                             })
                             .collect();
 
-                        // Sort structures by Manhattan distance to the spawning position
-                        energy_candidates.sort_by_key(|&(_, dist)| dist);
+                        // Sort structures: Spawn first, then Extensions by Chebyshev distance, then by numeric ID ascending
+                        energy_candidates.sort_by_key(|&(idx, _)| {
+                            let obj = &self.state.objects[idx];
+                            match obj {
+                                GameObject::Spawn { id, pos, .. } => {
+                                    let cdist = spos.x.abs_diff(pos.x).max(spos.y.abs_diff(pos.y)) as u32;
+                                    let num_id = id.parse::<u64>().unwrap_or(0);
+                                    (0u8, cdist, num_id)
+                                }
+                                GameObject::Extension { id, pos, .. } => {
+                                    let cdist = spos.x.abs_diff(pos.x).max(spos.y.abs_diff(pos.y)) as u32;
+                                    let num_id = id.parse::<u64>().unwrap_or(0);
+                                    (1u8, cdist, num_id)
+                                }
+                                _ => (2u8, 0, 0),
+                            }
+                        });
 
                         for (idx, _) in energy_candidates {
                             if remaining_needed == 0 {
