@@ -533,8 +533,8 @@ fn main() -> Result<()> {
                 ignore_users,
             };
             let tool = replay_diff::ReplayDiffTool::new(options);
-            let diffs = tool.compare_files(&replay1, &replay2)?;
-            replay_diff::print_diff_report(&replay1, &replay2, &diffs, verbose);
+            let (diffs, creep_id_map) = tool.compare_files(&replay1, &replay2)?;
+            replay_diff::print_diff_report(&replay1, &replay2, &diffs, &creep_id_map, verbose);
             if !diffs.is_empty() {
                 std::process::exit(1);
             }

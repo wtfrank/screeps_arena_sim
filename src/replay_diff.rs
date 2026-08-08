@@ -40,7 +40,7 @@ impl ReplayDiffTool {
         Self { options }
     }
 
-    pub fn compare_files<P: AsRef<Path>>(&self, path1: P, path2: P) -> Result<Vec<DiffDetail>> {
+    pub fn compare_files<P: AsRef<Path>>(&self, path1: P, path2: P) -> Result<(Vec<DiffDetail>, HashMap<String, String>)> {
         let content1 = fs::read_to_string(&path1)
             .with_context(|| format!("Failed to read replay file: {}", path1.as_ref().display()))?;
         let content2 = fs::read_to_string(&path2)
@@ -54,7 +54,7 @@ impl ReplayDiffTool {
         Ok(self.compare_ticks(&ticks1, &ticks2))
     }
 
-    pub fn compare_ticks(&self, ticks1: &[Value], ticks2: &[Value]) -> Vec<DiffDetail> {
+    pub fn compare_ticks(&self, ticks1: &[Value], ticks2: &[Value]) -> (Vec<DiffDetail>, HashMap<String, String>) {
         let mut diffs = Vec::new();
 
         // Discover and build user ID normalization mapping across both replays
@@ -119,7 +119,7 @@ impl ReplayDiffTool {
             }
         }
 
-        diffs
+        (diffs, creep_id_map)
     }
 
     fn compare_objects_list(
@@ -475,7 +475,7 @@ fn compare_json_values(v1: &Value, v2: &Value) -> bool {
     }
 }
 
-pub fn print_diff_report(file1: &str, file2: &str, diffs: &[DiffDetail], verbose: bool) {
+pub fn print_diff_report(file1: &str, file2: &str, diffs: &[DiffDetail], creep_id_map: &HashMap<String, String>, verbose: bool) {
     if diffs.is_empty() {
         println!("{}", format!("Comparing replay files:\n  1) {}\n  2) {}", file1, file2).dimmed());
         println!("{}", "✓ Replays match perfectly! No differences found.".green().bold());
@@ -519,6 +519,14 @@ pub fn print_diff_report(file1: &str, file2: &str, diffs: &[DiffDetail], verbose
                     d.val2.green()
                 );
             }
+        }
+    }
+    if !creep_id_map.is_empty() {
+        println!("{}", "Mapped Creep IDs (Replay 2 -> Replay 1):".cyan().bold());
+        let mut sorted_mappings: Vec<_> = creep_id_map.iter().collect();
+        sorted_mappings.sort_by_key(|(k, _)| (*k).clone());
+        for (r2_id, r1_id) in sorted_mappings {
+            println!("   • {} -> {}", r2_id.yellow(), r1_id.green());
         }
     }
     println!("{}", "================================================================================".yellow());
